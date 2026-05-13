@@ -204,7 +204,17 @@ struct ZoomScrollView: NSViewRepresentable {
                             resetScroll: Bool) {
         let imgSize = image.size
         guard imgSize.width > 0, imgSize.height > 0 else { return }
-        let viewport = scroll.contentView.bounds.size
+        // Use the clip view's *frame* (in screen pixels), not its bounds.
+        // NSClipView.bounds is in document coordinates and scales inversely
+        // with magnification — feeding it back into the fit-* formulas
+        // creates a loop where each page-turn computes a magnification that
+        // depends on the previous one, so the image drifts smaller (or
+        // larger) every page. Fall back to the scroll view's own bounds if
+        // the clip view hasn't been tiled yet.
+        var viewport = scroll.contentView.frame.size
+        if viewport.width <= 0 || viewport.height <= 0 {
+            viewport = scroll.bounds.size
+        }
         guard viewport.width > 0, viewport.height > 0 else { return }
 
         switch zoomMode {
@@ -237,10 +247,12 @@ struct ZoomScrollView: NSViewRepresentable {
     private func scrollToTopCenterX(scroll: NSScrollView) {
         guard let doc = scroll.documentView else { return }
         let mag = scroll.magnification
-        let docWidthInPoints = doc.frame.width
-        let viewportWidth = scroll.contentView.bounds.width
-        let unscaledExcess = max(0, docWidthInPoints - viewportWidth / mag) / 2
-        scroll.contentView.scroll(to: NSPoint(x: unscaledExcess, y: 0))
+        // Convert the viewport width (screen pixels) into document coords
+        // exactly once, instead of double-dividing by mag.
+        let viewportWidthScreen = scroll.contentView.frame.width
+        let viewportWidthDoc = mag > 0 ? viewportWidthScreen / mag : viewportWidthScreen
+        let excessDoc = max(0, doc.frame.width - viewportWidthDoc) / 2
+        scroll.contentView.scroll(to: NSPoint(x: excessDoc, y: 0))
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
