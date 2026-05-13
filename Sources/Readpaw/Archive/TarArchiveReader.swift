@@ -4,7 +4,7 @@ import AppKit
 /// Reads images out of zip/cbz/rar/cbr/7z archives by shelling out to
 /// /usr/bin/tar (bsdtar, libarchive-backed). Works for any archive
 /// libarchive can read.
-final class TarArchiveReader: ArchiveReader {
+final class TarArchiveReader: ContentReader {
     private let url: URL
     private let entries: [String]
     private let lock = NSLock()
@@ -24,9 +24,14 @@ final class TarArchiveReader: ArchiveReader {
 
     func pageCount() throws -> Int { entries.count }
 
-    func entryName(at index: Int) throws -> String {
-        guard index >= 0, index < entries.count else { throw ArchiveError.indexOutOfRange }
+    func pageTitle(at index: Int) -> String? {
+        guard index >= 0, index < entries.count else { return nil }
         return (entries[index] as NSString).lastPathComponent
+    }
+
+    func content(at index: Int) throws -> PageContent {
+        let img = try image(at: index)
+        return .image(img)
     }
 
     func data(at index: Int) throws -> Data {
@@ -44,7 +49,6 @@ final class TarArchiveReader: ArchiveReader {
 
         lock.lock()
         if memoryCache.count >= cacheLimit {
-            // Evict an arbitrary entry. For a smarter approach, track LRU.
             if let firstKey = memoryCache.keys.first {
                 memoryCache.removeValue(forKey: firstKey)
             }
@@ -71,7 +75,25 @@ final class TarArchiveReader: ArchiveReader {
 
     // MARK: - bsdtar helpers
 
-    private static let tarPath = "/usr/bin/tar"
+    static let tarPath = "/usr/bin/tar"
+
+    static func extractAll(archive: URL, to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: tarPath)
+        proc.arguments = ["-xf", archive.path, "-C", directory.path]
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        do { try proc.run() } catch {
+            throw ArchiveError.toolFailed("Failed to launch tar: \(error.localizedDescription)")
+        }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        if proc.terminationStatus != 0 {
+            let msg = String(data: errData, encoding: .utf8) ?? "tar exited with status \(proc.terminationStatus)"
+            throw ArchiveError.toolFailed("Could not extract archive: \(msg.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+    }
 
     private static func listEntries(at url: URL) throws -> [String] {
         let proc = Process()

@@ -2,6 +2,17 @@ import SwiftUI
 import AppKit
 
 @main
+enum AppMain {
+    static func main() {
+        let args = CommandLine.arguments
+        if let idx = args.firstIndex(of: "--smoke-test"), idx + 1 < args.count {
+            SmokeTest.run(folder: args[idx + 1])
+            exit(0)
+        }
+        ReadpawApp.main()
+    }
+}
+
 struct ReadpawApp: App {
     @StateObject private var library = LibraryStore()
     @StateObject private var openBooks = OpenBooks()

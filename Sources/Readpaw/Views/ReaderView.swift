@@ -22,7 +22,7 @@ enum ZoomMode: Equatable, Hashable {
     case fitHeight
     case fitPage
     case actual
-    case custom(CGFloat) // multiplier, 1.0 = 100%
+    case custom(CGFloat)
 
     var label: String {
         switch self {
@@ -48,11 +48,13 @@ final class ReaderModel: ObservableObject {
     @Published var loadError: String?
     @Published var isLoading: Bool = true
     @Published var doublePage: Bool = false
+    @Published var isTextBook: Bool = false
+    @Published var textZoom: CGFloat = 1.0
 
-    private var reader: ArchiveReader?
+    private var reader: ContentReader?
     private var prefetchTasks: [Int: Task<NSImage?, Never>] = [:]
     private var pageCache = NSCache<NSNumber, NSImage>()
-    private let decodeQueue = DispatchQueue(label: "Readpaw.Decode", qos: .userInitiated, attributes: .concurrent)
+    private var contentCache: [Int: PageContent] = [:]
     private var saveDebouncer: AnyCancellable?
     private let saveSubject = PassthroughSubject<Void, Never>()
 
@@ -72,19 +74,30 @@ final class ReaderModel: ObservableObject {
             self.isLoading = false
             return
         }
+        let isText = item.format.isEbook
+        self.isTextBook = isText
+        if isText {
+            self.direction = .vertical
+            self.zoomMode = .fitWidth
+        }
         isLoading = true
+        let format = item.format
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
                 let r = try ArchiveFactory.makeReader(for: item)
                 let count = try r.pageCount()
+                let last = item.lastReadPage
                 await MainActor.run {
                     self.reader = r
                     self.pageCount = count
-                    self.currentPage = max(0, min(item.lastReadPage, max(0, count - 1)))
+                    self.currentPage = max(0, min(last, max(0, count - 1)))
                     self.isLoading = false
+                    self.isTextBook = format.isEbook
                 }
-                await self.prefetchAround(self.currentPage)
+                if !format.isEbook {
+                    await self.prefetchAround(self.currentPage)
+                }
             } catch {
                 await MainActor.run {
                     self.loadError = error.localizedDescription
@@ -109,12 +122,25 @@ final class ReaderModel: ObservableObject {
         return img
     }
 
+    func contentSync(at index: Int) -> PageContent? {
+        if let cached = contentCache[index] { return cached }
+        guard let reader, index >= 0, index < pageCount else { return nil }
+        do {
+            let c = try reader.content(at: index)
+            contentCache[index] = c
+            return c
+        } catch {
+            return nil
+        }
+    }
+
     private func makeDecodeTask(index: Int) -> Task<NSImage?, Never> {
         return Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return nil }
             guard let reader = await self.reader else { return nil }
             do {
-                let img = try reader.image(at: index)
+                let content = try reader.content(at: index)
+                guard case .image(let img) = content else { return nil }
                 await MainActor.run {
                     self.pageCache.setObject(img, forKey: NSNumber(value: index))
                 }
@@ -126,6 +152,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func prefetchAround(_ index: Int) async {
+        guard !isTextBook else { return }
         let radius = 2
         for offset in -radius...radius {
             let i = index + offset
@@ -136,12 +163,12 @@ final class ReaderModel: ObservableObject {
     }
 
     func goNext() {
-        let step = doublePage ? 2 : 1
+        let step = (doublePage && !isTextBook) ? 2 : 1
         setPage(currentPage + step)
     }
 
     func goPrev() {
-        let step = doublePage ? 2 : 1
+        let step = (doublePage && !isTextBook) ? 2 : 1
         setPage(currentPage - step)
     }
 
@@ -150,6 +177,10 @@ final class ReaderModel: ObservableObject {
         currentPage = clamped
         Task { await prefetchAround(clamped) }
         saveSubject.send(())
+    }
+
+    func bumpTextZoom(_ delta: CGFloat) {
+        textZoom = max(0.6, min(2.5, textZoom + delta))
     }
 
     func persistProgress() {
@@ -162,6 +193,7 @@ final class ReaderModel: ObservableObject {
         prefetchTasks.values.forEach { $0.cancel() }
         prefetchTasks.removeAll()
         pageCache.removeAllObjects()
+        contentCache.removeAll()
         persistProgress()
     }
 }
@@ -173,9 +205,19 @@ struct ReaderView: View {
     @State private var jumpPageText: String = ""
     @State private var showJumpField: Bool = false
 
+    private var backgroundColor: Color {
+        guard let m = model.value else { return Color(red: 0.02, green: 0.04, blue: 0.10) }
+        if m.isTextBook {
+            return m.backgroundDark
+                ? Color(red: 0.04, green: 0.07, blue: 0.16)
+                : Color(red: 0.97, green: 0.95, blue: 0.91)
+        }
+        return m.backgroundDark ? .black : .white
+    }
+
     var body: some View {
         ZStack {
-            (model.value?.backgroundDark ?? true ? Color.black : Color.white)
+            backgroundColor
                 .ignoresSafeArea()
 
             Group {
@@ -198,7 +240,9 @@ struct ReaderView: View {
                         }
                         .foregroundStyle(m.backgroundDark ? .white : .black)
                     } else if m.pageCount > 0 {
-                        if m.direction == .vertical {
+                        if m.isTextBook {
+                            TextPageView(model: m)
+                        } else if m.direction == .vertical {
                             VerticalPagesView(model: m)
                         } else {
                             PagedReaderView(model: m)
@@ -251,69 +295,86 @@ struct ReaderView: View {
 
         ToolbarItemGroup(placement: .principal) {
             if let m = model.value {
-                HStack(spacing: 8) {
-                    Button {
-                        showJumpField.toggle()
-                        jumpPageText = "\(m.currentPage + 1)"
-                    } label: {
-                        Text("Page \(m.currentPage + 1) / \(m.pageCount)")
-                            .font(.callout.monospacedDigit())
+                Button {
+                    showJumpField.toggle()
+                    jumpPageText = "\(m.currentPage + 1)"
+                } label: {
+                    Text(m.isTextBook
+                         ? "Chapter \(m.currentPage + 1) / \(m.pageCount)"
+                         : "Page \(m.currentPage + 1) / \(m.pageCount)")
+                        .font(.callout.monospacedDigit())
+                }
+                .buttonStyle(.borderless)
+                .help(m.isTextBook ? "Jump to chapter" : "Jump to page")
+                .popover(isPresented: $showJumpField) {
+                    JumpToPageView(
+                        text: $jumpPageText,
+                        pageCount: m.pageCount,
+                        label: m.isTextBook ? "chapter" : "page"
+                    ) { newPage in
+                        m.setPage(newPage - 1)
+                        showJumpField = false
                     }
-                    .buttonStyle(.borderless)
-                    .help("Jump to page")
-                    .popover(isPresented: $showJumpField) {
-                        JumpToPageView(
-                            text: $jumpPageText,
-                            pageCount: m.pageCount
-                        ) { newPage in
-                            m.setPage(newPage - 1)
-                            showJumpField = false
-                        }
-                        .padding()
-                    }
+                    .padding()
                 }
             }
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
             if let m = model.value {
-                Picker("Direction", selection: Binding(
-                    get: { m.direction },
-                    set: { m.direction = $0 })
-                ) {
-                    ForEach(ReadingDirection.allCases) { d in
-                        Label(d.rawValue, systemImage: d.systemImage).tag(d)
+                if !m.isTextBook {
+                    Picker("Direction", selection: Binding(
+                        get: { m.direction },
+                        set: { m.direction = $0 })
+                    ) {
+                        ForEach(ReadingDirection.allCases) { d in
+                            Label(d.rawValue, systemImage: d.systemImage).tag(d)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                    .help("Reading direction")
                 }
-                .pickerStyle(.menu)
-                .frame(width: 170)
-                .help("Reading direction")
 
-                Menu {
-                    Button("Fit Page") { m.zoomMode = .fitPage }
-                    Button("Fit Width") { m.zoomMode = .fitWidth }
-                    Button("Fit Height") { m.zoomMode = .fitHeight }
-                    Button("Actual Size") { m.zoomMode = .actual }
-                    Divider()
-                    Button("50%") { m.zoomMode = .custom(0.5) }
-                    Button("75%") { m.zoomMode = .custom(0.75) }
-                    Button("100%") { m.zoomMode = .custom(1.0) }
-                    Button("150%") { m.zoomMode = .custom(1.5) }
-                    Button("200%") { m.zoomMode = .custom(2.0) }
-                } label: {
-                    Label(m.zoomMode.label, systemImage: "magnifyingglass")
-                }
-                .help("Zoom")
+                if m.isTextBook {
+                    Button { m.bumpTextZoom(-0.1) } label: {
+                        Image(systemName: "textformat.size.smaller")
+                    }
+                    .help("Smaller text")
+                    Button { m.bumpTextZoom(+0.1) } label: {
+                        Image(systemName: "textformat.size.larger")
+                    }
+                    .help("Larger text")
+                    Text("\(Int(m.textZoom * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Menu {
+                        Button("Fit Page") { m.zoomMode = .fitPage }
+                        Button("Fit Width") { m.zoomMode = .fitWidth }
+                        Button("Fit Height") { m.zoomMode = .fitHeight }
+                        Button("Actual Size") { m.zoomMode = .actual }
+                        Divider()
+                        Button("50%") { m.zoomMode = .custom(0.5) }
+                        Button("75%") { m.zoomMode = .custom(0.75) }
+                        Button("100%") { m.zoomMode = .custom(1.0) }
+                        Button("150%") { m.zoomMode = .custom(1.5) }
+                        Button("200%") { m.zoomMode = .custom(2.0) }
+                    } label: {
+                        Label(m.zoomMode.label, systemImage: "magnifyingglass")
+                    }
+                    .help("Zoom")
 
-                Toggle(isOn: Binding(
-                    get: { m.doublePage },
-                    set: { m.doublePage = $0 })
-                ) {
-                    Image(systemName: m.doublePage ? "book.pages.fill" : "book.pages")
+                    Toggle(isOn: Binding(
+                        get: { m.doublePage },
+                        set: { m.doublePage = $0 })
+                    ) {
+                        Image(systemName: m.doublePage ? "book.pages.fill" : "book.pages")
+                    }
+                    .toggleStyle(.button)
+                    .help("Double-page spread")
+                    .disabled(m.direction == .vertical)
                 }
-                .toggleStyle(.button)
-                .help("Double-page spread")
-                .disabled(m.direction == .vertical)
 
                 Toggle(isOn: Binding(
                     get: { m.backgroundDark },
@@ -341,7 +402,7 @@ struct ReaderView: View {
                         set: { m.setPage(Int($0.rounded())) }
                     ),
                     range: 0...Double(max(0, m.pageCount - 1)),
-                    reversed: m.direction == .rightToLeft
+                    reversed: !m.isTextBook && m.direction == .rightToLeft
                 )
 
                 Text("\(m.pageCount)")
@@ -367,10 +428,10 @@ struct ReaderView: View {
 
         switch event.keyCode {
         case leftKey:
-            m.direction == .rightToLeft ? m.goNext() : m.goPrev()
+            (!m.isTextBook && m.direction == .rightToLeft) ? m.goNext() : m.goPrev()
             return true
         case rightKey:
-            m.direction == .rightToLeft ? m.goPrev() : m.goNext()
+            (!m.isTextBook && m.direction == .rightToLeft) ? m.goPrev() : m.goNext()
             return true
         case spaceKey, pageDown:
             m.goNext()
@@ -398,14 +459,15 @@ final class ReaderModelHolder: ObservableObject {
 struct JumpToPageView: View {
     @Binding var text: String
     let pageCount: Int
+    let label: String
     var onSubmit: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Jump to page (1 – \(pageCount))")
+            Text("Jump to \(label) (1 – \(pageCount))")
                 .font(.callout)
             HStack {
-                TextField("Page", text: $text)
+                TextField(label.capitalized, text: $text)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
                     .onSubmit(submit)
@@ -413,12 +475,32 @@ struct JumpToPageView: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .frame(width: 220)
+        .frame(width: 240)
     }
 
     private func submit() {
         if let n = Int(text), n >= 1, n <= pageCount {
             onSubmit(n)
         }
+    }
+}
+
+struct TextPageView: View {
+    @ObservedObject var model: ReaderModel
+
+    var body: some View {
+        Group {
+            if let content = model.contentSync(at: model.currentPage) {
+                WebPageView(
+                    content: content,
+                    darkMode: model.backgroundDark,
+                    zoom: model.textZoom,
+                    onScrollToTop: {}
+                )
+            } else {
+                ProgressView()
+            }
+        }
+        .id(model.currentPage)
     }
 }

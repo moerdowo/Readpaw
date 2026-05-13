@@ -7,6 +7,13 @@ enum ComicFormat: String, Codable, CaseIterable {
     case rar
     case sevenZip
     case pdf
+    case epub
+    case mobi
+    case azw
+    case azw3
+    case fb2
+    case txt
+    case html
 
     static func from(url: URL) -> ComicFormat? {
         switch url.pathExtension.lowercased() {
@@ -16,6 +23,13 @@ enum ComicFormat: String, Codable, CaseIterable {
         case "rar": return .rar
         case "7z": return .sevenZip
         case "pdf": return .pdf
+        case "epub": return .epub
+        case "mobi", "prc": return .mobi
+        case "azw": return .azw
+        case "azw3", "kf8": return .azw3
+        case "fb2": return .fb2
+        case "txt": return .txt
+        case "html", "htm", "xhtml": return .html
         default: return nil
         }
     }
@@ -28,10 +42,24 @@ enum ComicFormat: String, Codable, CaseIterable {
         case .rar: return "RAR"
         case .sevenZip: return "7Z"
         case .pdf: return "PDF"
+        case .epub: return "EPUB"
+        case .mobi: return "MOBI"
+        case .azw: return "AZW"
+        case .azw3: return "AZW3"
+        case .fb2: return "FB2"
+        case .txt: return "TXT"
+        case .html: return "HTML"
         }
     }
 
-    var isArchive: Bool { self != .pdf }
+    var isEbook: Bool {
+        switch self {
+        case .epub, .mobi, .azw, .azw3, .fb2, .txt, .html: return true
+        default: return false
+        }
+    }
+
+    var isImageBased: Bool { !isEbook }
 }
 
 struct ComicItem: Identifiable, Codable, Hashable {

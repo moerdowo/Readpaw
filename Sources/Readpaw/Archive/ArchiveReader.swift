@@ -1,12 +1,29 @@
 import Foundation
 import AppKit
 
-protocol ArchiveReader: AnyObject {
+/// A single renderable page. Can be a raster image (comics) or HTML (ebooks).
+enum PageContent {
+    case image(NSImage)
+    case htmlFile(URL, baseAccess: URL)
+    case htmlString(String, baseURL: URL?)
+}
+
+protocol ContentReader: AnyObject {
     func pageCount() throws -> Int
-    func image(at index: Int) throws -> NSImage
-    func data(at index: Int) throws -> Data
-    func entryName(at index: Int) throws -> String
+    func pageTitle(at index: Int) -> String?
+    func content(at index: Int) throws -> PageContent
+    func coverImage() throws -> NSImage?
     func close()
+}
+
+extension ContentReader {
+    func pageTitle(at index: Int) -> String? { nil }
+    func coverImage() throws -> NSImage? {
+        if let content = try? content(at: 0), case .image(let img) = content {
+            return img
+        }
+        return nil
+    }
 }
 
 enum ArchiveError: LocalizedError {
@@ -15,6 +32,7 @@ enum ArchiveError: LocalizedError {
     case decodeFailed
     case toolFailed(String)
     case unsupportedFormat
+    case parseFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -23,17 +41,28 @@ enum ArchiveError: LocalizedError {
         case .decodeFailed: return "Could not decode page image."
         case .toolFailed(let m): return m
         case .unsupportedFormat: return "Unsupported file format."
+        case .parseFailed(let m): return m
         }
     }
 }
 
 enum ArchiveFactory {
-    static func makeReader(for item: ComicItem) throws -> ArchiveReader {
+    static func makeReader(for item: ComicItem) throws -> ContentReader {
         switch item.format {
         case .pdf:
             return try PDFArchiveReader(url: item.url)
         case .cbz, .zip, .cbr, .rar, .sevenZip:
             return try TarArchiveReader(url: item.url)
+        case .epub:
+            return try EpubReader(url: item.url)
+        case .mobi, .azw, .azw3:
+            return try MobiReader(url: item.url)
+        case .fb2:
+            return try Fb2Reader(url: item.url)
+        case .txt:
+            return try TxtReader(url: item.url)
+        case .html:
+            return try HtmlReader(url: item.url)
         }
     }
 }
@@ -50,7 +79,6 @@ enum ImageEntryFilter {
 
     static func isImagePath(_ path: String) -> Bool {
         let lower = path.lowercased()
-        // Skip Mac metadata
         if lower.contains("__macosx/") { return false }
         if lower.hasSuffix("/") { return false }
         let name = (lower as NSString).lastPathComponent
@@ -64,5 +92,27 @@ enum ImageEntryFilter {
         entries.sorted { lhs, rhs in
             lhs.localizedStandardCompare(rhs) == .orderedAscending
         }
+    }
+}
+
+/// Shared support directory for extracted ebook content. Each book gets its own
+/// subdirectory; cleared when the reader closes.
+enum BookSandbox {
+    static var rootDirectory: URL {
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)) ?? fm.temporaryDirectory
+        let dir = base.appendingPathComponent("Readpaw/Books", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func newWorkspace() -> URL {
+        let dir = rootDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func cleanup(_ dir: URL) {
+        try? FileManager.default.removeItem(at: dir)
     }
 }

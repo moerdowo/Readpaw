@@ -153,8 +153,8 @@ final class LibraryStore: ObservableObject {
     private func generateThumbnail(for item: ComicItem) async {
         guard let reader = try? ArchiveFactory.makeReader(for: item) else { return }
         defer { reader.close() }
-        guard let image = try? reader.image(at: 0) else { return }
-        let thumb = image.resized(maxDimension: 600)
+        guard let cover = (try? reader.coverImage()) ?? nil else { return }
+        let thumb = cover.resized(maxDimension: 600)
         guard let data = thumb.jpegData(compressionQuality: 0.82) else { return }
         let filename = "\(item.id.uuidString).jpg"
         let url = thumbnailsDirectory.appendingPathComponent(filename)

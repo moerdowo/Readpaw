@@ -148,7 +148,7 @@ struct LibraryView: View {
             }
             .padding(24)
         }
-        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
+        .background(ReadpawBackground())
     }
 
     @ViewBuilder
