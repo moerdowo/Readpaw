@@ -55,25 +55,8 @@ struct WebPageView: NSViewRepresentable {
     }
 
     private func applyDark(_ web: WKWebView) {
-        let css = darkMode ? Self.darkCSS : Self.lightCSS
-        let scheme = darkMode ? "dark" : "light"
-        let js = """
-        (function() {
-            // 1. Tell the document which color scheme we're rendering in so
-            //    `prefers-color-scheme` media queries inside the book's own
-            //    stylesheet resolve to the right branch.
-            document.documentElement.style.colorScheme = '\(scheme)';
-            // 2. Replace our injected override stylesheet.
-            let id = 'readpaw-style';
-            let existing = document.getElementById(id);
-            if (existing) existing.remove();
-            let s = document.createElement('style');
-            s.id = id;
-            s.textContent = `\(css.replacingOccurrences(of: "`", with: "\\`"))`;
-            document.head ? document.head.appendChild(s) : document.documentElement.appendChild(s);
-        })();
-        """
-        web.evaluateJavaScript(js, completionHandler: nil)
+        web.evaluateJavaScript(Self.overrideScript(darkMode: darkMode),
+                               completionHandler: nil)
     }
 
     private static var darkCSSScript: WKUserScript {
@@ -98,21 +81,40 @@ struct WebPageView: NSViewRepresentable {
 
     // The `body *` selector with !important nukes any color the EPUB/MOBI
     // author set on individual elements (p, h1, span, etc.) — they often
-    // bake in white text expecting a dark theme, which becomes invisible in
-    // light mode. Links re-override after the sweep so we don't nuke the
-    // link colour we want.
-    private static let darkCSS = """
+    // bake in dark text expecting a light theme (or light text expecting a
+    // dark theme), which becomes invisible against the opposite background.
+    // Links re-override after the sweep so we don't nuke the link colour we
+    // want. Visited links and headings get an explicit pass too to make
+    // sure publisher CSS like `:visited` doesn't slip through.
+    static let darkCSS = """
     html, body { background: transparent !important; color: #e6ecf2 !important; }
     body, body * { color: #e6ecf2 !important; }
-    a, a * { color: #6fa8ff !important; }
+    body a, body a *, body a:visited, body a:visited * { color: #6fa8ff !important; }
     img { opacity: 0.95; }
     """
 
-    private static let lightCSS = """
+    static let lightCSS = """
     html, body { background: transparent !important; color: #1c1c1f !important; }
     body, body * { color: #1c1c1f !important; }
-    a, a * { color: #1b66c9 !important; }
+    body a, body a *, body a:visited, body a:visited * { color: #1b66c9 !important; }
     """
+
+    static func overrideScript(darkMode: Bool) -> String {
+        let css = darkMode ? darkCSS : lightCSS
+        let scheme = darkMode ? "dark" : "light"
+        return """
+        (function() {
+            document.documentElement.style.colorScheme = '\(scheme)';
+            let id = 'readpaw-style';
+            let existing = document.getElementById(id);
+            if (existing) existing.remove();
+            let s = document.createElement('style');
+            s.id = id;
+            s.textContent = `\(css.replacingOccurrences(of: "`", with: "\\`"))`;
+            document.head ? document.head.appendChild(s) : document.documentElement.appendChild(s);
+        })();
+        """
+    }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastContent: String?
@@ -129,6 +131,28 @@ struct WebPageView: NSViewRepresentable {
                 }
             }
             decisionHandler(.allow)
+        }
+
+        // Re-inject the colour override against the freshly-loaded document.
+        // applyDark from updateNSView fires immediately after loadFileURL,
+        // which is asynchronous — so our <style> was being attached to the
+        // previous chapter's document (or about:blank) and the new chapter
+        // would render with the publisher's own dark-on-dark text. Catching
+        // didFinish guarantees the override lands on the real document.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript(
+                WebPageView.overrideScript(darkMode: darkMode),
+                completionHandler: nil
+            )
+        }
+
+        // Some EPUBs trigger same-document navigations (anchor links between
+        // sections inside one chapter). Re-applying on commit catches those.
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            webView.evaluateJavaScript(
+                WebPageView.overrideScript(darkMode: darkMode),
+                completionHandler: nil
+            )
         }
     }
 }
