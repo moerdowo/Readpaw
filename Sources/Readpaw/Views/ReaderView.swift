@@ -416,9 +416,18 @@ struct ReaderView: View {
     }
 
     private func bottomBar(model m: ReaderModel) -> some View {
-        VStack(spacing: 6) {
+        // In right-to-left manga mode the slider thumb already travels
+        // right-to-left, but the two endpoint labels used to stay fixed at
+        // [current ──●── total]. Swap them so the layout reads as
+        // [total ──●── current] — i.e. the high page numbers sit on the left
+        // end (where the slider ends up) and the low/current sit on the
+        // right end (where the reader starts).
+        let isRTL = !m.isTextBook && m.direction == .rightToLeft
+        let leftNumber  = isRTL ? m.pageCount : (m.currentPage + 1)
+        let rightNumber = isRTL ? (m.currentPage + 1) : m.pageCount
+        return VStack(spacing: 6) {
             HStack(spacing: 12) {
-                Text("\(m.currentPage + 1)")
+                Text("\(leftNumber)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(width: 36, alignment: .trailing)
@@ -429,10 +438,10 @@ struct ReaderView: View {
                         set: { m.setPage(Int($0.rounded())) }
                     ),
                     range: 0...Double(max(0, m.pageCount - 1)),
-                    reversed: !m.isTextBook && m.direction == .rightToLeft
+                    reversed: isRTL
                 )
 
-                Text("\(m.pageCount)")
+                Text("\(rightNumber)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(width: 36, alignment: .leading)
