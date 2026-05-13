@@ -9,12 +9,6 @@ struct PagedReaderView: View {
             ZoomablePageView(model: model,
                              pageIndex: model.currentPage,
                              displaySize: geo.size)
-                // Tie SwiftUI view identity to the current page so each page
-                // change tears down the previous ZoomScrollView and builds a
-                // fresh NSScrollView. Without this, pinch-zoom magnification
-                // can leak across pages because the underlying scroll view
-                // is reused.
-                .id(model.currentPage)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .onTapGesture { location in
@@ -45,11 +39,21 @@ struct ZoomablePageView: View {
     var body: some View {
         Group {
             if let img = image {
-                ZoomScrollView(image: img, zoomMode: model.zoomMode)
+                // Keep the same ZoomScrollView (and the same underlying
+                // NSScrollView) across page changes — so a pinch zoom the
+                // user has done persists into the next page, and there's no
+                // tear-down/rebuild flash when flipping pages.
+                ZoomScrollView(
+                    image: img,
+                    zoomMode: model.zoomMode,
+                    onUserMagnify: { mag in
+                        // Capture the pinch into the model so the next page
+                        // (which goes through applyZoom on image swap)
+                        // continues at the same magnification.
+                        model.zoomMode = .custom(mag)
+                    }
+                )
             } else if let placeholder = placeholder {
-                // Show the cached cover thumbnail (already on disk) as a soft,
-                // slightly-blurred placeholder while the real first page
-                // decodes — so the reader never opens to an empty spinner.
                 ZStack {
                     Image(nsImage: placeholder)
                         .resizable()
@@ -72,9 +76,6 @@ struct ZoomablePageView: View {
         }
         .frame(width: displaySize.width, height: displaySize.height)
         .clipped()
-        // .task(id:) cancels and restarts the decode when pageIndex changes,
-        // and runs reliably on first appearance (unlike .onAppear which has
-        // ordering quirks inside GeometryReader).
         .task(id: pageIndex) {
             await loadCurrent()
         }
@@ -82,14 +83,20 @@ struct ZoomablePageView: View {
 
     @MainActor
     private func loadCurrent() async {
-        image = nil
-        // Only the first page gets a cover placeholder — for subsequent
-        // pages the prefetch usually has them ready before the task even runs.
-        placeholder = (pageIndex == 0) ? model.coverThumbnail() : nil
+        // Important: do NOT clear `image` before the new one is ready. Holding
+        // the previous page visible until the next decode completes means
+        // SwiftUI never has to fall back to the placeholder branch on a page
+        // turn (which would cause a flash of the cover thumbnail in
+        // windowed mode), and ZoomScrollView stays mounted the whole time so
+        // updateNSView can swap the image in place.
+        if image == nil {
+            placeholder = (pageIndex == 0) ? model.coverThumbnail() : nil
+        }
         guard pageIndex >= 0, pageIndex < model.pageCount else { return }
         let img = await model.image(at: pageIndex)
-        if !Task.isCancelled, img != nil {
+        if !Task.isCancelled, let img {
             image = img
+            placeholder = nil
         }
     }
 }
@@ -97,8 +104,9 @@ struct ZoomablePageView: View {
 struct ZoomScrollView: NSViewRepresentable {
     let image: NSImage
     let zoomMode: ZoomMode
+    let onUserMagnify: (CGFloat) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(onUserMagnify: onUserMagnify) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -127,27 +135,73 @@ struct ZoomScrollView: NSViewRepresentable {
         scroll.documentView = clipped
         context.coordinator.scrollView = scroll
         context.coordinator.container = clipped
+        context.coordinator.lastImage = image
+        context.coordinator.lastZoomMode = zoomMode
+
+        // Capture user pinch-zoom — when the pinch settles, push the chosen
+        // magnification back to the model so it persists into the next page
+        // (and so the toolbar's zoom menu reflects reality).
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.didEndLiveMagnify(_:)),
+            name: NSScrollView.didEndLiveMagnifyNotification,
+            object: scroll
+        )
+
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let container = context.coordinator.container else { return }
-        let imageChanged = container.imageView?.image !== image
+        let coord = context.coordinator
+        coord.onUserMagnify = onUserMagnify
+
+        let imageChanged = coord.lastImage !== image
+        let zoomModeChanged = coord.lastZoomMode != zoomMode
+
         if imageChanged {
+            coord.lastImage = image
             container.imageView?.image = image
             container.frame = NSRect(origin: .zero, size: image.size)
             container.imageView?.frame = container.bounds
-            // Reset any previous pinch-zoom synchronously so the new page
-            // doesn't paint at the old page's magnification. The async pass
-            // below refines the layout once the contentView bounds settle.
-            applyZoom(scroll: scroll, container: container)
+            // New page: apply the (book-level) zoom and snap scroll to top
+            // immediately so we never paint at the previous page's scroll
+            // position. The async pass below catches the case where the
+            // contentView bounds aren't valid yet.
+            applyZoom(scroll: scroll, container: container, resetScroll: true)
+            DispatchQueue.main.async {
+                applyZoom(scroll: scroll, container: container, resetScroll: true)
+            }
         }
-        DispatchQueue.main.async {
-            applyZoom(scroll: scroll, container: container)
+
+        if zoomModeChanged {
+            coord.lastZoomMode = zoomMode
+            if coord.suppressNextZoomApply {
+                // The user just finished pinching — we updated the model to
+                // mirror their magnification, but we don't want to clobber
+                // the scroll position by re-running applyZoom right after.
+                coord.suppressNextZoomApply = false
+            } else if !imageChanged {
+                // Toolbar zoom-mode change on the current page. Apply the
+                // new magnification without resetting scroll position so the
+                // user's reading spot is preserved (only fitPage centres,
+                // others just rescale around the current view).
+                DispatchQueue.main.async {
+                    applyZoom(scroll: scroll, container: container, resetScroll: false)
+                }
+            }
         }
     }
 
-    private func applyZoom(scroll: NSScrollView, container: FlippedClipContainer) {
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator,
+                                                   name: NSScrollView.didEndLiveMagnifyNotification,
+                                                   object: scroll)
+    }
+
+    private func applyZoom(scroll: NSScrollView,
+                            container: FlippedClipContainer,
+                            resetScroll: Bool) {
         let imgSize = image.size
         guard imgSize.width > 0, imgSize.height > 0 else { return }
         let viewport = scroll.contentView.bounds.size
@@ -157,38 +211,30 @@ struct ZoomScrollView: NSViewRepresentable {
         case .fitPage:
             let scale = min(viewport.width / imgSize.width, viewport.height / imgSize.height)
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            // The whole page fits; align top-left so a tall page that just
-            // barely overshoots height-wise still shows the top.
-            scrollToTopLeft(scroll: scroll, container: container)
+            if resetScroll { scrollToTopLeft(scroll: scroll) }
         case .fitWidth:
             let scale = viewport.width / imgSize.width
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            scrollToTopLeft(scroll: scroll, container: container)
+            if resetScroll { scrollToTopLeft(scroll: scroll) }
         case .fitHeight:
             let scale = viewport.height / imgSize.height
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            // Centered horizontally is the conventional fit-height behaviour,
-            // but we still want vertical top.
-            scrollToTopCenterX(scroll: scroll, container: container)
+            if resetScroll { scrollToTopCenterX(scroll: scroll) }
         case .actual:
             setContent(scroll: scroll, container: container, size: imgSize, magnification: 1.0)
-            scrollToTopLeft(scroll: scroll, container: container)
+            if resetScroll { scrollToTopLeft(scroll: scroll) }
         case .custom(let m):
             setContent(scroll: scroll, container: container, size: imgSize, magnification: m)
-            scrollToTopLeft(scroll: scroll, container: container)
+            if resetScroll { scrollToTopLeft(scroll: scroll) }
         }
     }
 
-    /// Anchor the document view to (0, 0) in scroll coordinates so a fresh
-    /// page always opens at its top-left corner.
-    private func scrollToTopLeft(scroll: NSScrollView, container: FlippedClipContainer) {
+    private func scrollToTopLeft(scroll: NSScrollView) {
         scroll.contentView.scroll(to: .zero)
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    /// Keep the page horizontally centred (helpful when fit-height leaves
-    /// extra width) while still anchoring to the top vertically.
-    private func scrollToTopCenterX(scroll: NSScrollView, container: FlippedClipContainer) {
+    private func scrollToTopCenterX(scroll: NSScrollView) {
         guard let doc = scroll.documentView else { return }
         let mag = scroll.magnification
         let docWidthInPoints = doc.frame.width
@@ -198,26 +244,40 @@ struct ZoomScrollView: NSViewRepresentable {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    private func setContent(scroll: NSScrollView, container: FlippedClipContainer, size: CGSize, magnification: CGFloat) {
+    private func setContent(scroll: NSScrollView,
+                             container: FlippedClipContainer,
+                             size: CGSize,
+                             magnification: CGFloat) {
         container.frame = NSRect(origin: .zero, size: size)
         container.imageView?.frame = container.bounds
         scroll.magnification = magnification
     }
 
-    private func centerContent(scroll: NSScrollView) {
-        guard let doc = scroll.documentView else { return }
-        let mag = scroll.magnification
-        let docSize = NSSize(width: doc.frame.width * mag, height: doc.frame.height * mag)
-        let viewport = scroll.contentView.bounds.size
-        let x = max(0, (docSize.width / mag - viewport.width) / 2)
-        let y = max(0, (docSize.height / mag - viewport.height) / 2)
-        scroll.contentView.scroll(to: NSPoint(x: x, y: y))
-        scroll.reflectScrolledClipView(scroll.contentView)
-    }
-
-    final class Coordinator {
+    final class Coordinator: NSObject {
         weak var scrollView: NSScrollView?
         weak var container: FlippedClipContainer?
+        var lastImage: NSImage?
+        var lastZoomMode: ZoomMode = .fitPage
+        var onUserMagnify: (CGFloat) -> Void
+        var suppressNextZoomApply: Bool = false
+
+        init(onUserMagnify: @escaping (CGFloat) -> Void) {
+            self.onUserMagnify = onUserMagnify
+        }
+
+        @objc func didEndLiveMagnify(_ notification: Notification) {
+            guard let scroll = notification.object as? NSScrollView else { return }
+            let mag = scroll.magnification
+            // We're about to push this magnification onto the model, which
+            // will come back through updateNSView as a zoomMode change.
+            // Suppress that re-apply so the scroll position the user just
+            // pinched into isn't reset under them.
+            suppressNextZoomApply = true
+            let callback = onUserMagnify
+            DispatchQueue.main.async {
+                callback(mag)
+            }
+        }
     }
 }
 
