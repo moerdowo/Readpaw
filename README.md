@@ -50,6 +50,35 @@ Every reader is implemented in pure Swift or shells out to tools that ship with 
 - **Persistent per-book state** — last-read page, reading direction, zoom mode, ebook text size are all remembered across reopens.
 - **Multiple windows** — every book opens in its own resizable window.
 
+## Install (prebuilt DMG)
+
+Grab the latest `Readpaw-x.y.z.dmg` from the [Releases](https://github.com/moerdowo/Readpaw/releases) page, open it, and drag **Readpaw** onto **Applications**.
+
+### First-run: bypass Gatekeeper
+
+The DMG is **ad-hoc signed but not notarised by Apple**, so the first time you launch Readpaw macOS will refuse with something like _"Apple could not verify Readpaw is free of malware"_ or _"Readpaw is damaged and can't be opened"_. Pick one:
+
+**A. Right-click → Open** (one-shot)
+
+1. In Finder, open **/Applications**.
+2. **Right-click** (or control-click) **Readpaw.app** → **Open**.
+3. The dialog now offers an **Open** button — click it.
+4. Subsequent launches work normally from Spotlight / Dock.
+
+**B. Strip the quarantine attribute** (works even if "Open" is greyed out)
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Readpaw.app
+```
+
+That removes the `com.apple.quarantine` xattr macOS attaches to anything downloaded from a browser, and Gatekeeper stops nagging.
+
+**C. System Settings → Privacy & Security**
+
+If you tried to open the app and macOS blocked it, open **System Settings → Privacy & Security**, scroll to the security section near the bottom, and click **Open Anyway** next to the Readpaw entry that appeared.
+
+If you'd rather skip the song-and-dance, build from source — local builds aren't quarantined.
+
 ## Build & run
 
 ```bash
@@ -62,6 +91,9 @@ swift run Readpaw --smoke-test /path/to/books
 # Build a proper .app you can drop into /Applications:
 ./scripts/build-app.sh
 open build/Readpaw.app
+
+# Wrap the .app in a versioned, ad-hoc-signed DMG for distribution:
+./scripts/make-dmg.sh     # writes build/Readpaw-<version>.dmg
 
 # Re-render the app icon from a different source PNG:
 swift scripts/make-appicon.swift Resources/AppIcon-source.png
@@ -107,6 +139,7 @@ Resources/
 └── AppIcon.iconset/            # all sizes, kept for re-bundling
 scripts/
 ├── build-app.sh                # SwiftPM build → Readpaw.app + ad-hoc codesign
+├── make-dmg.sh                 # Readpaw.app → Readpaw-<version>.dmg
 └── make-appicon.swift          # squircle-masked .icns generator
 ```
 
