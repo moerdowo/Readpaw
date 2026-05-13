@@ -52,32 +52,45 @@ Every reader is implemented in pure Swift or shells out to tools that ship with 
 
 ## Install (prebuilt DMG)
 
-Grab the latest `Readpaw-x.y.z.dmg` from the [Releases](https://github.com/moerdowo/Readpaw/releases) page, open it, and drag **Readpaw** onto **Applications**.
+> The DMG is ad-hoc signed but **not Apple-notarised** (that costs a paid Developer ID). On macOS Sequoia the dialog _"Apple could not verify 'Readpaw-x.y.z.dmg' is free of malware"_ now blocks the DMG itself before you can even see what's inside, and the dialog no longer offers an Open Anyway button — you have to clear the quarantine flag first or walk through System Settings.
 
-### First-run: bypass Gatekeeper
+### Quickest path — one Terminal command, then drag-to-install
 
-The DMG is **ad-hoc signed but not notarised by Apple**, so the first time you launch Readpaw macOS will refuse with something like _"Apple could not verify Readpaw is free of malware"_ or _"Readpaw is damaged and can't be opened"_. Pick one:
+1. Download `Readpaw-x.y.z.dmg` from the [Releases](https://github.com/moerdowo/Readpaw/releases) page.
+2. Before double-clicking it, run:
 
-**A. Right-click → Open** (one-shot)
+   ```bash
+   xattr -dr com.apple.quarantine ~/Downloads/Readpaw-0.1.0.dmg
+   ```
 
-1. In Finder, open **/Applications**.
-2. **Right-click** (or control-click) **Readpaw.app** → **Open**.
-3. The dialog now offers an **Open** button — click it.
-4. Subsequent launches work normally from Spotlight / Dock.
+3. Double-click the DMG, drag **Readpaw** onto **Applications**.
+4. Clear quarantine on the installed app once:
 
-**B. Strip the quarantine attribute** (works even if "Open" is greyed out)
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Readpaw.app
+   ```
+
+5. Launch from Spotlight / Dock as normal.
+
+`xattr -dr com.apple.quarantine …` removes the `com.apple.quarantine` extended attribute macOS attaches to anything downloaded from a browser. Without that attribute, Gatekeeper stops blocking the file.
+
+### Without Terminal — System Settings flow
+
+1. Double-click the DMG. macOS will refuse — click **Done** in the dialog (don't move it to the Bin).
+2. Open **System Settings → Privacy & Security** → scroll to the security section near the bottom.
+3. Click **Open Anyway** next to the Readpaw-x.y.z.dmg line, authenticate, and macOS will mount the DMG.
+4. Drag **Readpaw** onto **Applications**. The first launch will need the same Privacy & Security flow — click "Done" when macOS refuses, then Open Anyway in Settings.
+
+### No-Gatekeeper path — build from source
+
+Local builds aren't quarantined:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/Readpaw.app
+git clone https://github.com/moerdowo/Readpaw.git
+cd Readpaw
+./scripts/build-app.sh
+open build/Readpaw.app
 ```
-
-That removes the `com.apple.quarantine` xattr macOS attaches to anything downloaded from a browser, and Gatekeeper stops nagging.
-
-**C. System Settings → Privacy & Security**
-
-If you tried to open the app and macOS blocked it, open **System Settings → Privacy & Security**, scroll to the security section near the bottom, and click **Open Anyway** next to the Readpaw entry that appeared.
-
-If you'd rather skip the song-and-dance, build from source — local builds aren't quarantined.
 
 ## Build & run
 
