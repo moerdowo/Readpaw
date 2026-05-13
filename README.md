@@ -5,7 +5,7 @@
 <h1 align="center">Readpaw</h1>
 
 <p align="center">
-  A native macOS reader for comics, manga, and ebooks.
+  A native macOS reader for ebooks (epub, mobi, pdf, cbr, cbz)
   <br/>
   Built with SwiftUI. No third-party dependencies.
 </p>
