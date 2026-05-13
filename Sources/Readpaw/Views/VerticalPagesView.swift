@@ -3,7 +3,6 @@ import AppKit
 
 struct VerticalPagesView: View {
     @ObservedObject var model: ReaderModel
-    @State private var currentVisible: Int = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -12,11 +11,16 @@ struct VerticalPagesView: View {
                     ForEach(0..<model.pageCount, id: \.self) { idx in
                         VerticalPageRow(model: model, pageIndex: idx)
                             .id(idx)
-                            .onAppear {
-                                if abs(idx - model.currentPage) <= 1 {
-                                    return
+                            // Drive the page tracker from real visibility
+                            // crossings, not the LazyVStack's onAppear (which
+                            // fires when rows enter the prefetch buffer and
+                            // misses every-other-row, giving 3 → 5 → 7).
+                            .onScrollVisibilityChange(threshold: 0.4) { visible in
+                                guard visible else { return }
+                                if idx != model.currentPage {
+                                    VerticalScrollState.suppressNextScrollTo = true
+                                    model.setPage(idx)
                                 }
-                                model.setPage(idx)
                             }
                     }
                 }
@@ -29,7 +33,14 @@ struct VerticalPagesView: View {
                 }
             }
             .onChange(of: model.currentPage) { _, newPage in
-                if !VerticalScrollState.isUserScrolling {
+                // Only re-scroll programmatically when the page change came
+                // from outside this scroll view (slider, toolbar, keyboard).
+                // A page change driven by the user scrolling sets the
+                // suppress flag so we don't snap back to the top of the new
+                // row mid-drag.
+                if VerticalScrollState.suppressNextScrollTo {
+                    VerticalScrollState.suppressNextScrollTo = false
+                } else {
                     proxy.scrollTo(newPage, anchor: .top)
                 }
             }
@@ -38,7 +49,9 @@ struct VerticalPagesView: View {
 }
 
 enum VerticalScrollState {
-    static var isUserScrolling: Bool = false
+    /// Set by visibility-driven page updates inside VerticalPagesView so the
+    /// matching onChange handler doesn't immediately scroll the view back.
+    static var suppressNextScrollTo: Bool = false
 }
 
 struct VerticalPageRow: View {

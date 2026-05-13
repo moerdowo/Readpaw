@@ -7,16 +7,16 @@ struct PageSlider: View {
     let reversed: Bool
 
     var body: some View {
-        Slider(
-            value: Binding(
-                get: { reversed ? (range.upperBound - value + range.lowerBound) : value },
-                set: { new in value = reversed ? (range.upperBound - new + range.lowerBound) : new }
-            ),
-            in: range,
-            step: 1
-        )
-        .controlSize(.regular)
-        .tint(.white)
+        // Flipping the binding alone only mirrored the thumb's position — the
+        // fill direction (and which way you had to drag) stayed left-to-right.
+        // Forcing layoutDirection on the Slider's environment flips the whole
+        // control: thumb starts on the right at page 0, the fill grows from
+        // the right toward the thumb, and dragging left advances pages,
+        // which matches the right-to-left reading flow.
+        Slider(value: $value, in: range, step: 1)
+            .controlSize(.regular)
+            .tint(.white)
+            .environment(\.layoutDirection, reversed ? .rightToLeft : .leftToRight)
     }
 }
 
