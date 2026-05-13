@@ -30,6 +30,12 @@ cp "${EXE_PATH}" "${BUNDLE_DIR}/Contents/MacOS/${EXE_NAME}"
 chmod +x "${BUNDLE_DIR}/Contents/MacOS/${EXE_NAME}"
 cp "${INFO_PLIST}" "${BUNDLE_DIR}/Contents/Info.plist"
 
+# App icon. CFBundleIconFile in Info.plist references "AppIcon", which the
+# macOS Dock / Finder look up as AppIcon.icns in the bundle's Resources.
+if [[ -f "Resources/AppIcon.icns" ]]; then
+  cp "Resources/AppIcon.icns" "${BUNDLE_DIR}/Contents/Resources/AppIcon.icns"
+fi
+
 # Copy SwiftPM-generated resource bundle if present.
 RES_BUNDLE="${BIN_PATH}/Readpaw_Readpaw.bundle"
 if [[ -d "${RES_BUNDLE}" ]]; then

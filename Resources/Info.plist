@@ -6,6 +6,8 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>Readpaw</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>app.readpaw.Readpaw</string>
     <key>CFBundleInfoDictionaryVersion</key>
