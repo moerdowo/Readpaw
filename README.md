@@ -21,7 +21,7 @@ Comics/manga support uses `/usr/bin/tar` (bsdtar / libarchive) that ships with m
 
 ## Features
 
-- **First-launch welcome screen** with a small rotating 3D glass orb — translucent shell, wispy energy core inside, specular highlight, layered halo glow — over a calm navy gradient.
+- **First-launch welcome screen** with a small 3D USDZ model that auto-rotates and can be dragged to spin manually — over a calm navy gradient.
 - **Library** with cover thumbnails (first image for comics, EPUB/FB2 cover image, or a stylized placeholder for text formats). Search, sort by title / date added / recently opened, and resize cover cards on the fly.
 - **Reader window** opens on double-click. Adapts to content type:
   - **Comics/manga:** reading direction (LTR, RTL for manga, vertical webtoon), zoom modes (Fit Page/Width/Height/Actual/50–200%), double-page spread, dark/light page background, click-edges to flip.
@@ -66,8 +66,8 @@ Sources/Readpaw/
 │   ├── TxtReader.swift         # TXT / HTML / FB2 readers + EbookStyle wrapper
 │   └── EbookStyle.swift        # shared HTML chrome (typography, dark mode)
 ├── Views/
-│   ├── OnboardingView.swift    # welcome screen with glowing orb + pill CTA
-│   ├── OrbView.swift           # SceneKit glass orb: energy core + transparent shell + specular billboards + halos
+│   ├── OnboardingView.swift    # welcome screen with USDZ model + pill CTA
+│   ├── USDZView.swift          # SceneKit USDZ loader: auto-rotate + drag-to-rotate
 │   ├── LibraryView.swift       # grid of covers, search, sort, scan progress
 │   ├── ReaderView.swift        # reader shell + toolbar + content dispatch
 │   ├── PagedReaderView.swift   # single/double-page mode (NSScrollView zoom)
@@ -77,7 +77,7 @@ Sources/Readpaw/
 │   └── ReaderWindowController.swift
 └── Utilities/
     ├── NSImage+Resize.swift
-    └── OrbTexture.swift        # procedural orb surface, high-contrast core interior, radial glow
+    └── (utilities)
 Resources/Info.plist             # bundled by build-app.sh
 scripts/build-app.sh             # SwiftPM build → Readpaw.app
 ```
@@ -90,4 +90,4 @@ scripts/build-app.sh             # SwiftPM build → Readpaw.app
 - EPUBs are extracted to `~/Library/Caches/Readpaw/Books/<uuid>/` while open; the workspace is removed when the reader closes.
 - The chosen folder is stored as a security-scoped bookmark in `UserDefaults`.
 - DRM'd MOBI/AZW files cannot be opened; HUFF/CDIC-compressed variants are not yet supported.
-- The orb is a layered scene: an opaque rotating "energy core" sphere (high-contrast value-noise interior texture), a translucent Blinn-shaded glass shell counter-rotating around it, two additively-blended specular billboards faking the bright glass highlight in the upper-left, an inverted back-face rim shell for the silhouette, and three additive halo planes behind for outer bloom. The directional key light produces shading on the glass while the core stays self-lit. All textures are generated at runtime — no image assets shipped.
+- The welcome model is `Sources/Readpaw/Resources/Color_orb.usdz`, loaded via SceneKit's native USDZ support. The view auto-rotates around Y; an `NSPanGestureRecognizer` lets the user drag to set yaw/pitch directly (with pitch clamped), and releases the gesture to resume auto-rotation from the new orientation.

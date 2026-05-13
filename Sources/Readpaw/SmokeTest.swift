@@ -1,7 +1,5 @@
 import Foundation
 import AppKit
-import SceneKit
-import UniformTypeIdentifiers
 
 /// Headless verification of every `ContentReader` against a folder of books.
 /// Invoked from the synthesized `main` when `--smoke-test <folder>` is passed.
@@ -51,51 +49,4 @@ enum SmokeTest {
         if !any { print("(no supported files found)") }
     }
 
-    /// `--dump-orb <png-path>` — writes the high-contrast core interior texture.
-    static func dumpOrb(to path: String) {
-        guard let cg = OrbTexture.makeInterior(width: 1024, height: 512) else {
-            print("Failed to generate orb texture")
-            return
-        }
-        writePNG(cg, to: path, label: "orb interior")
-    }
-
-    /// Renders the OrbView's SCNScene to an offscreen image so we can verify
-    /// how the composited glass orb looks without bringing up the GUI.
-    static func dumpOrbScene(to path: String) {
-        let scene = OrbView.buildScene()
-        scene.background.contents = NSColor(red: 0.020, green: 0.040, blue: 0.110, alpha: 1.0)
-
-        let renderer = SCNRenderer(device: nil, options: nil)
-        renderer.scene = scene
-        let img = renderer.snapshot(atTime: 0.0,
-                                    with: NSSize(width: 1024, height: 1024),
-                                    antialiasingMode: .multisampling4X)
-        guard let tiff = img.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
-            print("Failed to encode scene PNG")
-            return
-        }
-        do {
-            try png.write(to: URL(fileURLWithPath: path))
-            print("Wrote orb scene to \(path)")
-        } catch {
-            print("Failed to write scene: \(error)")
-        }
-    }
-
-    private static func writePNG(_ cg: CGImage, to path: String, label: String) {
-        let url = URL(fileURLWithPath: path)
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-            print("Failed to open destination at \(path)")
-            return
-        }
-        CGImageDestinationAddImage(dest, cg, nil)
-        if CGImageDestinationFinalize(dest) {
-            print("Wrote \(label) to \(path)")
-        } else {
-            print("Failed to write \(label) to \(path)")
-        }
-    }
 }

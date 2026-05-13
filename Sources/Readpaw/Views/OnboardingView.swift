@@ -11,11 +11,11 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 32)
 
-                OrbView()
-                    .frame(width: 300, height: 300)
-                    .shadow(color: Color(red: 0.55, green: 0.78, blue: 1.0).opacity(0.30),
+                USDZView()
+                    .frame(width: 360, height: 360)
+                    .shadow(color: Color(red: 0.55, green: 0.78, blue: 1.0).opacity(0.22),
                             radius: 70, x: 0, y: 0)
-                    .shadow(color: Color(red: 0.85, green: 0.94, blue: 1.0).opacity(0.20),
+                    .shadow(color: Color(red: 0.85, green: 0.94, blue: 1.0).opacity(0.14),
                             radius: 24, x: 0, y: 0)
 
                 Spacer(minLength: 24)

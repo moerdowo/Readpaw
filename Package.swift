@@ -10,7 +10,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Readpaw",
-            path: "Sources/Readpaw"
+            path: "Sources/Readpaw",
+            resources: [
+                .copy("Resources/Color_orb.usdz")
+            ]
         )
     ]
 )
