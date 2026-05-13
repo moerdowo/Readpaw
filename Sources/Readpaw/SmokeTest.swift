@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SceneKit
 import UniformTypeIdentifiers
 
 /// Headless verification of every `ContentReader` against a folder of books.
@@ -50,12 +51,49 @@ enum SmokeTest {
         if !any { print("(no supported files found)") }
     }
 
-    /// `--dump-galaxy <png-path>` — writes a sample galaxy texture for visual review.
-    static func dumpGalaxy(to path: String) {
-        guard let cg = GalaxyTexture.makeSpiral(size: 1024, arms: 4, twist: 3.4, armWidth: 0.32) else {
-            print("Failed to generate galaxy texture")
+    /// `--dump-moon <png-path>` — writes a sample moon surface texture for visual review.
+    static func dumpMoon(to path: String) {
+        guard let cg = MoonTexture.makeSurface(width: 1536, height: 768) else {
+            print("Failed to generate moon texture")
             return
         }
+        writePNG(cg, to: path, label: "moon surface")
+    }
+
+    static func dumpGlow(to path: String) {
+        guard let cg = MoonTexture.makeGlow(size: 1024, coreRadius: 0.42, falloff: 0.6) else {
+            print("Failed to generate glow texture")
+            return
+        }
+        writePNG(cg, to: path, label: "glow")
+    }
+
+    /// Renders the MoonView's SCNScene to an offscreen image so we can verify
+    /// how the lit, composited moon looks without bringing up the GUI.
+    static func dumpMoonScene(to path: String) {
+        let scene = MoonView.buildScene(spinDuration: 100)
+        scene.background.contents = NSColor(red: 0.020, green: 0.040, blue: 0.110, alpha: 1.0)
+
+        let renderer = SCNRenderer(device: nil, options: nil)
+        renderer.scene = scene
+        let img = renderer.snapshot(atTime: 0.0,
+                                    with: NSSize(width: 1024, height: 1024),
+                                    antialiasingMode: .multisampling4X)
+        guard let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            print("Failed to encode scene PNG")
+            return
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            print("Wrote moon scene to \(path)")
+        } catch {
+            print("Failed to write scene: \(error)")
+        }
+    }
+
+    private static func writePNG(_ cg: CGImage, to path: String, label: String) {
         let url = URL(fileURLWithPath: path)
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             print("Failed to open destination at \(path)")
@@ -63,24 +101,9 @@ enum SmokeTest {
         }
         CGImageDestinationAddImage(dest, cg, nil)
         if CGImageDestinationFinalize(dest) {
-            print("Wrote galaxy texture to \(path)")
+            print("Wrote \(label) to \(path)")
         } else {
-            print("Failed to write image to \(path)")
+            print("Failed to write \(label) to \(path)")
         }
-    }
-
-    static func dumpStarfield(to path: String) {
-        guard let cg = GalaxyTexture.makeStarfield(size: 1024, density: 800) else {
-            print("Failed to generate starfield texture")
-            return
-        }
-        let url = URL(fileURLWithPath: path)
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-            print("Failed to open destination at \(path)")
-            return
-        }
-        CGImageDestinationAddImage(dest, cg, nil)
-        _ = CGImageDestinationFinalize(dest)
-        print("Wrote starfield to \(path)")
     }
 }

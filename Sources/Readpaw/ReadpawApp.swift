@@ -9,12 +9,16 @@ enum AppMain {
             SmokeTest.run(folder: args[idx + 1])
             exit(0)
         }
-        if let idx = args.firstIndex(of: "--dump-galaxy"), idx + 1 < args.count {
-            SmokeTest.dumpGalaxy(to: args[idx + 1])
+        if let idx = args.firstIndex(of: "--dump-moon"), idx + 1 < args.count {
+            SmokeTest.dumpMoon(to: args[idx + 1])
             exit(0)
         }
-        if let idx = args.firstIndex(of: "--dump-starfield"), idx + 1 < args.count {
-            SmokeTest.dumpStarfield(to: args[idx + 1])
+        if let idx = args.firstIndex(of: "--dump-glow"), idx + 1 < args.count {
+            SmokeTest.dumpGlow(to: args[idx + 1])
+            exit(0)
+        }
+        if let idx = args.firstIndex(of: "--dump-moon-scene"), idx + 1 < args.count {
+            SmokeTest.dumpMoonScene(to: args[idx + 1])
             exit(0)
         }
         ReadpawApp.main()
