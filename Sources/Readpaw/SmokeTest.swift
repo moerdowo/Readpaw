@@ -51,19 +51,19 @@ enum SmokeTest {
         if !any { print("(no supported files found)") }
     }
 
-    /// `--dump-orb <png-path>` — writes the orb surface equirectangular texture.
+    /// `--dump-orb <png-path>` — writes the high-contrast core interior texture.
     static func dumpOrb(to path: String) {
-        guard let cg = OrbTexture.makeSurface(width: 1024, height: 512) else {
+        guard let cg = OrbTexture.makeInterior(width: 1024, height: 512) else {
             print("Failed to generate orb texture")
             return
         }
-        writePNG(cg, to: path, label: "orb surface")
+        writePNG(cg, to: path, label: "orb interior")
     }
 
     /// Renders the OrbView's SCNScene to an offscreen image so we can verify
-    /// how the composited glowing orb looks without bringing up the GUI.
+    /// how the composited glass orb looks without bringing up the GUI.
     static func dumpOrbScene(to path: String) {
-        let scene = OrbView.buildScene(spinDuration: 70)
+        let scene = OrbView.buildScene()
         scene.background.contents = NSColor(red: 0.020, green: 0.040, blue: 0.110, alpha: 1.0)
 
         let renderer = SCNRenderer(device: nil, options: nil)

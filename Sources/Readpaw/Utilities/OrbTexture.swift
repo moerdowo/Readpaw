@@ -64,6 +64,65 @@ enum OrbTexture {
         return ctx.makeImage()
     }
 
+    /// High-contrast wispy texture for the *interior* core of a glass orb.
+    /// Deep indigo base with bright cyan-white veins so the rotation reads
+    /// clearly. Designed to live inside a translucent shell.
+    static func makeInterior(width: Int = 1024,
+                              height: Int = 512,
+                              seed: UInt64 = 0xDEAD_BEAF_CAFE) -> CGImage? {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil,
+                                   width: width,
+                                   height: height,
+                                   bitsPerComponent: 8,
+                                   bytesPerRow: width * 4,
+                                   space: cs,
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        guard let raw = ctx.data else { return nil }
+        let buf = raw.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        let baseNoise = ValueNoise(seed: seed)
+        let detailNoise = ValueNoise(seed: seed ^ 0x9E37_79B9_7F4A_7C15)
+
+        for y in 0..<height {
+            let v = Double(y) / Double(height)
+            let lat = (0.5 - v) * .pi
+            let cosLat = cos(lat)
+            let sinLat = sin(lat)
+            for x in 0..<width {
+                let u = Double(x) / Double(width)
+                let lon = (u - 0.5) * 2 * .pi
+                let px = cosLat * cos(lon)
+                let py = sinLat
+                let pz = cosLat * sin(lon)
+
+                let cloud  = baseNoise.fbm(px * 2.4, py * 2.4, pz * 2.4, octaves: 5, lacunarity: 2.0, gain: 0.58)
+                let detail = detailNoise.fbm(px * 6.0, py * 6.0, pz * 6.0, octaves: 4, lacunarity: 2.1, gain: 0.5)
+
+                let mixed = clamp01(cloud * 0.65 + detail * 0.35)
+
+                // Bright veins where the noise peaks.
+                let veins = max(0, mixed - 0.62) * 3.5
+                let body = pow(mixed, 0.9)
+                let intensity = clamp01(body + veins)
+
+                // Deep indigo → cyan → white gradient.
+                let r = lerp(0.06, 0.95, intensity)
+                let g = lerp(0.14, 0.99, intensity)
+                let b = lerp(0.45, 1.00, intensity)
+
+                let off = (y * width + x) * 4
+                buf[off]     = UInt8(r * 255)
+                buf[off + 1] = UInt8(g * 255)
+                buf[off + 2] = UInt8(b * 255)
+                buf[off + 3] = 255
+            }
+        }
+        return ctx.makeImage()
+    }
+
     static func makeGlow(size: Int = 1024,
                           coreRadius: Double = 0.40,
                           falloff: Double = 0.9,
@@ -113,6 +172,7 @@ enum OrbTexture {
     }
 
     private static func clamp01(_ v: Double) -> Double { max(0, min(1, v)) }
+    private static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
 }
 
 // MARK: - Noise utilities (shared)
