@@ -51,27 +51,19 @@ enum SmokeTest {
         if !any { print("(no supported files found)") }
     }
 
-    /// `--dump-moon <png-path>` — writes a sample moon surface texture for visual review.
-    static func dumpMoon(to path: String) {
-        guard let cg = MoonTexture.makeSurface(width: 1536, height: 768) else {
-            print("Failed to generate moon texture")
+    /// `--dump-earth <png-path>` — writes the procedural Earth equirectangular texture.
+    static func dumpEarth(to path: String) {
+        guard let cg = EarthTexture.make(width: 1536, height: 768) else {
+            print("Failed to generate Earth texture")
             return
         }
-        writePNG(cg, to: path, label: "moon surface")
+        writePNG(cg, to: path, label: "Earth surface")
     }
 
-    static func dumpGlow(to path: String) {
-        guard let cg = MoonTexture.makeGlow(size: 1024, coreRadius: 0.42, falloff: 0.6) else {
-            print("Failed to generate glow texture")
-            return
-        }
-        writePNG(cg, to: path, label: "glow")
-    }
-
-    /// Renders the MoonView's SCNScene to an offscreen image so we can verify
-    /// how the lit, composited moon looks without bringing up the GUI.
-    static func dumpMoonScene(to path: String) {
-        let scene = MoonView.buildScene(spinDuration: 100)
+    /// Renders the GlobeView's SCNScene to an offscreen image so we can verify
+    /// how the lit, composited Earth looks without bringing up the GUI.
+    static func dumpGlobeScene(to path: String) {
+        let scene = GlobeView.buildScene(spinDuration: 38)
         scene.background.contents = NSColor(red: 0.020, green: 0.040, blue: 0.110, alpha: 1.0)
 
         let renderer = SCNRenderer(device: nil, options: nil)
@@ -87,7 +79,7 @@ enum SmokeTest {
         }
         do {
             try png.write(to: URL(fileURLWithPath: path))
-            print("Wrote moon scene to \(path)")
+            print("Wrote globe scene to \(path)")
         } catch {
             print("Failed to write scene: \(error)")
         }
