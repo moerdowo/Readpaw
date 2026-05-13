@@ -157,22 +157,45 @@ struct ZoomScrollView: NSViewRepresentable {
         case .fitPage:
             let scale = min(viewport.width / imgSize.width, viewport.height / imgSize.height)
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            centerContent(scroll: scroll)
+            // The whole page fits; align top-left so a tall page that just
+            // barely overshoots height-wise still shows the top.
+            scrollToTopLeft(scroll: scroll, container: container)
         case .fitWidth:
             let scale = viewport.width / imgSize.width
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: 0))
+            scrollToTopLeft(scroll: scroll, container: container)
         case .fitHeight:
             let scale = viewport.height / imgSize.height
             setContent(scroll: scroll, container: container, size: imgSize, magnification: scale)
-            centerContent(scroll: scroll)
+            // Centered horizontally is the conventional fit-height behaviour,
+            // but we still want vertical top.
+            scrollToTopCenterX(scroll: scroll, container: container)
         case .actual:
             setContent(scroll: scroll, container: container, size: imgSize, magnification: 1.0)
-            centerContent(scroll: scroll)
+            scrollToTopLeft(scroll: scroll, container: container)
         case .custom(let m):
             setContent(scroll: scroll, container: container, size: imgSize, magnification: m)
-            centerContent(scroll: scroll)
+            scrollToTopLeft(scroll: scroll, container: container)
         }
+    }
+
+    /// Anchor the document view to (0, 0) in scroll coordinates so a fresh
+    /// page always opens at its top-left corner.
+    private func scrollToTopLeft(scroll: NSScrollView, container: FlippedClipContainer) {
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    /// Keep the page horizontally centred (helpful when fit-height leaves
+    /// extra width) while still anchoring to the top vertically.
+    private func scrollToTopCenterX(scroll: NSScrollView, container: FlippedClipContainer) {
+        guard let doc = scroll.documentView else { return }
+        let mag = scroll.magnification
+        let docWidthInPoints = doc.frame.width
+        let viewportWidth = scroll.contentView.bounds.width
+        let unscaledExcess = max(0, docWidthInPoints - viewportWidth / mag) / 2
+        scroll.contentView.scroll(to: NSPoint(x: unscaledExcess, y: 0))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     private func setContent(scroll: NSScrollView, container: FlippedClipContainer, size: CGSize, magnification: CGFloat) {
