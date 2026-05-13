@@ -35,7 +35,10 @@ struct ReadpawApp: App {
             RootView()
                 .environmentObject(library)
                 .environmentObject(openBooks)
-                .frame(minWidth: 900, minHeight: 600)
+                // Floor large enough that the onboarding's 480-pt 3D orb,
+                // tagline and pill CTA all fit at once without the user
+                // having to manually resize the window.
+                .frame(minWidth: 760, minHeight: 780)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
@@ -43,6 +46,10 @@ struct ReadpawApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
+        // First-open size — wide enough for the library grid later, tall
+        // enough for the welcome screen on first launch. Subsequent opens
+        // use whatever frame macOS remembered for the window.
+        .defaultSize(width: 980, height: 860)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Folder…") {
