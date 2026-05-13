@@ -120,7 +120,6 @@ final class LibraryStore: ObservableObject {
 
     private func enumerateComicFiles(root: URL) -> [URL] {
         let fm = FileManager.default
-        let exts: Set<String> = ["cbz", "cbr", "zip", "rar", "7z", "pdf"]
         guard let enumerator = fm.enumerator(at: root,
                                              includingPropertiesForKeys: [.isRegularFileKey],
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
@@ -128,7 +127,10 @@ final class LibraryStore: ObservableObject {
         }
         var out: [URL] = []
         for case let u as URL in enumerator {
-            if exts.contains(u.pathExtension.lowercased()) {
+            // Single source of truth: any file whose extension maps to a
+            // ComicFormat is considered a library item — so adding ebook
+            // formats in ComicFormat.from(url:) automatically extends the scan.
+            if ComicFormat.from(url: u) != nil {
                 out.append(u)
             }
         }
