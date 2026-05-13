@@ -12,11 +12,11 @@ struct OnboardingView: View {
                 Spacer(minLength: 32)
 
                 USDZView()
-                    .frame(width: 360, height: 360)
-                    .shadow(color: Color(red: 0.55, green: 0.78, blue: 1.0).opacity(0.22),
-                            radius: 70, x: 0, y: 0)
-                    .shadow(color: Color(red: 0.85, green: 0.94, blue: 1.0).opacity(0.14),
-                            radius: 24, x: 0, y: 0)
+                    .frame(width: 480, height: 480)
+                    .shadow(color: Color(red: 0.55, green: 0.65, blue: 1.0).opacity(0.22),
+                            radius: 70, x: -16, y: 0)
+                    .shadow(color: Color(red: 1.0, green: 0.45, blue: 0.55).opacity(0.22),
+                            radius: 70, x: 16, y: 0)
 
                 Spacer(minLength: 24)
 

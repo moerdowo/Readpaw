@@ -27,9 +27,10 @@ struct USDZView: NSViewRepresentable {
 
         let scene = SCNScene()
         scene.background.contents = NSColor.clear
-        // Soft IBL fallback so PBR-style USDZ materials don't render flat.
-        scene.lightingEnvironment.contents = NSColor(white: 0.95, alpha: 1)
-        scene.lightingEnvironment.intensity = 1.4
+        // Very dim, slightly-cool IBL so PBR materials don't render pure black,
+        // but low enough that the red/blue directional lights dominate.
+        scene.lightingEnvironment.contents = NSColor(red: 0.32, green: 0.28, blue: 0.42, alpha: 1)
+        scene.lightingEnvironment.intensity = 0.45
         view.scene = scene
 
         if let url = Bundle.module.url(forResource: resourceName, withExtension: "usdz"),
@@ -74,7 +75,10 @@ struct USDZView: NSViewRepresentable {
             maxB.z - minB.z
         )
         let radius = max(size.x, max(size.y, size.z)) / 2.0
-        let dist = max(radius * 2.6, 0.5)
+        // 3.6× radius pulls the camera back far enough to leave a comfortable
+        // margin around the model at the chosen FOV — so it never clips even
+        // when the user drags it around.
+        let dist = max(radius * 3.6, 0.5)
 
         let camera = SCNCamera()
         camera.fieldOfView = 34
@@ -93,29 +97,45 @@ struct USDZView: NSViewRepresentable {
         scene.rootNode.addChildNode(camNode)
     }
 
+    /// Two strong directional lights — red from the right, blue from the left —
+    /// plus a faint cool ambient so the shadow side keeps some definition
+    /// without washing out the colored rims.
     private func addLights(to scene: SCNScene) {
-        let key = SCNLight()
-        key.type = .directional
-        key.intensity = 1200
-        key.color = NSColor(red: 1.0, green: 0.97, blue: 0.92, alpha: 1)
-        let keyNode = SCNNode()
-        keyNode.light = key
-        keyNode.eulerAngles = SCNVector3(-0.35, -0.50, 0)
-        scene.rootNode.addChildNode(keyNode)
+        let red = SCNLight()
+        red.type = .directional
+        red.intensity = 1800
+        red.color = NSColor(red: 1.0, green: 0.18, blue: 0.30, alpha: 1)
+        let redNode = SCNNode()
+        redNode.light = red
+        // Pitched down + rotated to come from upper-right.
+        redNode.eulerAngles = SCNVector3(-0.30, -0.70, 0)
+        scene.rootNode.addChildNode(redNode)
 
-        let fill = SCNLight()
-        fill.type = .directional
-        fill.intensity = 500
-        fill.color = NSColor(red: 0.55, green: 0.72, blue: 1.0, alpha: 1)
-        let fillNode = SCNNode()
-        fillNode.light = fill
-        fillNode.eulerAngles = SCNVector3(0.32, 1.10, 0)
-        scene.rootNode.addChildNode(fillNode)
+        let blue = SCNLight()
+        blue.type = .directional
+        blue.intensity = 1800
+        blue.color = NSColor(red: 0.20, green: 0.45, blue: 1.0, alpha: 1)
+        let blueNode = SCNNode()
+        blueNode.light = blue
+        // Pitched down + rotated to come from upper-left.
+        blueNode.eulerAngles = SCNVector3(-0.30, 0.70, 0)
+        scene.rootNode.addChildNode(blueNode)
+
+        // A subtle counter-fill from below so the bottom isn't pitch black —
+        // a cool magenta blend of the two key colors keeps the palette tight.
+        let bottom = SCNLight()
+        bottom.type = .directional
+        bottom.intensity = 250
+        bottom.color = NSColor(red: 0.55, green: 0.30, blue: 0.75, alpha: 1)
+        let bottomNode = SCNNode()
+        bottomNode.light = bottom
+        bottomNode.eulerAngles = SCNVector3(0.85, 0, 0)
+        scene.rootNode.addChildNode(bottomNode)
 
         let amb = SCNLight()
         amb.type = .ambient
-        amb.intensity = 350
-        amb.color = NSColor(white: 0.55, alpha: 1)
+        amb.intensity = 120
+        amb.color = NSColor(red: 0.45, green: 0.35, blue: 0.55, alpha: 1)
         let ambNode = SCNNode()
         ambNode.light = amb
         scene.rootNode.addChildNode(ambNode)
