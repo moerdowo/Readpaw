@@ -51,19 +51,19 @@ enum SmokeTest {
         if !any { print("(no supported files found)") }
     }
 
-    /// `--dump-earth <png-path>` — writes the procedural Earth equirectangular texture.
-    static func dumpEarth(to path: String) {
-        guard let cg = EarthTexture.make(width: 1536, height: 768) else {
-            print("Failed to generate Earth texture")
+    /// `--dump-orb <png-path>` — writes the orb surface equirectangular texture.
+    static func dumpOrb(to path: String) {
+        guard let cg = OrbTexture.makeSurface(width: 1024, height: 512) else {
+            print("Failed to generate orb texture")
             return
         }
-        writePNG(cg, to: path, label: "Earth surface")
+        writePNG(cg, to: path, label: "orb surface")
     }
 
-    /// Renders the GlobeView's SCNScene to an offscreen image so we can verify
-    /// how the lit, composited Earth looks without bringing up the GUI.
-    static func dumpGlobeScene(to path: String) {
-        let scene = GlobeView.buildScene(spinDuration: 38)
+    /// Renders the OrbView's SCNScene to an offscreen image so we can verify
+    /// how the composited glowing orb looks without bringing up the GUI.
+    static func dumpOrbScene(to path: String) {
+        let scene = OrbView.buildScene(spinDuration: 70)
         scene.background.contents = NSColor(red: 0.020, green: 0.040, blue: 0.110, alpha: 1.0)
 
         let renderer = SCNRenderer(device: nil, options: nil)
@@ -79,7 +79,7 @@ enum SmokeTest {
         }
         do {
             try png.write(to: URL(fileURLWithPath: path))
-            print("Wrote globe scene to \(path)")
+            print("Wrote orb scene to \(path)")
         } catch {
             print("Failed to write scene: \(error)")
         }

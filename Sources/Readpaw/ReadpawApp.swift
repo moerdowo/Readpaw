@@ -9,12 +9,12 @@ enum AppMain {
             SmokeTest.run(folder: args[idx + 1])
             exit(0)
         }
-        if let idx = args.firstIndex(of: "--dump-earth"), idx + 1 < args.count {
-            SmokeTest.dumpEarth(to: args[idx + 1])
+        if let idx = args.firstIndex(of: "--dump-orb"), idx + 1 < args.count {
+            SmokeTest.dumpOrb(to: args[idx + 1])
             exit(0)
         }
-        if let idx = args.firstIndex(of: "--dump-globe-scene"), idx + 1 < args.count {
-            SmokeTest.dumpGlobeScene(to: args[idx + 1])
+        if let idx = args.firstIndex(of: "--dump-orb-scene"), idx + 1 < args.count {
+            SmokeTest.dumpOrbScene(to: args[idx + 1])
             exit(0)
         }
         ReadpawApp.main()
