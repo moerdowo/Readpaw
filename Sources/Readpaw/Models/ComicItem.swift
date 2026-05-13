@@ -74,6 +74,13 @@ struct ComicItem: Identifiable, Codable, Hashable {
     var pageCount: Int?
     var thumbnailFileName: String?
 
+    // Per-book reading preferences. Optional so old library.json files
+    // without these keys still decode cleanly — Swift's synthesized Codable
+    // uses decodeIfPresent for optional fields.
+    var lastDirection: ReadingDirection?
+    var lastZoomMode: ZoomMode?
+    var lastTextZoom: Double?
+
     init(url: URL, format: ComicFormat, fileSize: Int64) {
         self.id = UUID()
         self.url = url
@@ -85,5 +92,8 @@ struct ComicItem: Identifiable, Codable, Hashable {
         self.lastReadPage = 0
         self.pageCount = nil
         self.thumbnailFileName = nil
+        self.lastDirection = nil
+        self.lastZoomMode = nil
+        self.lastTextZoom = nil
     }
 }

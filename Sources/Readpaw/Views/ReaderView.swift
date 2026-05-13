@@ -17,7 +17,7 @@ enum ReadingDirection: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum ZoomMode: Equatable, Hashable {
+enum ZoomMode: Equatable, Hashable, Codable {
     case fitWidth
     case fitHeight
     case fitPage
@@ -33,6 +33,40 @@ enum ZoomMode: Equatable, Hashable {
         case .custom(let v): return "\(Int(v * 100))%"
         }
     }
+
+    // Manual Codable so the .custom(CGFloat) associated value can round-trip
+    // through library.json. CGFloat isn't Codable on every platform; encoding
+    // as Double avoids the issue.
+    private enum CodingKeys: String, CodingKey { case kind, value }
+    private enum Kind: String, Codable {
+        case fitWidth, fitHeight, fitPage, actual, custom
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .fitWidth:  try c.encode(Kind.fitWidth,  forKey: .kind)
+        case .fitHeight: try c.encode(Kind.fitHeight, forKey: .kind)
+        case .fitPage:   try c.encode(Kind.fitPage,   forKey: .kind)
+        case .actual:    try c.encode(Kind.actual,    forKey: .kind)
+        case .custom(let v):
+            try c.encode(Kind.custom, forKey: .kind)
+            try c.encode(Double(v),   forKey: .value)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(Kind.self, forKey: .kind) {
+        case .fitWidth:  self = .fitWidth
+        case .fitHeight: self = .fitHeight
+        case .fitPage:   self = .fitPage
+        case .actual:    self = .actual
+        case .custom:
+            let v = try c.decode(Double.self, forKey: .value)
+            self = .custom(CGFloat(v))
+        }
+    }
 }
 
 @MainActor
@@ -42,14 +76,25 @@ final class ReaderModel: ObservableObject {
 
     @Published var pageCount: Int = 0
     @Published var currentPage: Int = 0
-    @Published var direction: ReadingDirection = .leftToRight
-    @Published var zoomMode: ZoomMode = .fitPage
+    @Published var direction: ReadingDirection = .leftToRight {
+        didSet { if direction != oldValue, !isRestoring { saveSubject.send(()) } }
+    }
+    @Published var zoomMode: ZoomMode = .fitPage {
+        didSet { if zoomMode != oldValue, !isRestoring { saveSubject.send(()) } }
+    }
     @Published var backgroundDark: Bool = true
     @Published var loadError: String?
     @Published var isLoading: Bool = true
     @Published var loadingStatus: String = "Opening book…"
     @Published var isTextBook: Bool = false
-    @Published var textZoom: CGFloat = 1.0
+    @Published var textZoom: CGFloat = 1.0 {
+        didSet { if textZoom != oldValue, !isRestoring { saveSubject.send(()) } }
+    }
+
+    /// True while load() is restoring values from the saved item — used to
+    /// suppress the didSet observers below so we don't trigger a save during
+    /// startup that just re-writes the same values back.
+    private var isRestoring: Bool = false
 
     private var reader: ContentReader?
     private var prefetchTasks: [Int: Task<NSImage?, Never>] = [:]
@@ -75,11 +120,28 @@ final class ReaderModel: ObservableObject {
             return
         }
         let isText = item.format.isEbook
+
+        // Restore saved per-book reading prefs first, behind the
+        // `isRestoring` flag so the didSet observers don't try to persist
+        // them back out as if the user had just changed them.
+        isRestoring = true
         self.isTextBook = isText
         if isText {
-            self.direction = .vertical
-            self.zoomMode = .fitWidth
+            self.direction = item.lastDirection ?? .vertical
+            self.zoomMode  = item.lastZoomMode  ?? .fitWidth
+            if let savedTextZoom = item.lastTextZoom {
+                self.textZoom = CGFloat(savedTextZoom)
+            }
+        } else {
+            if let savedDirection = item.lastDirection {
+                self.direction = savedDirection
+            }
+            if let savedZoom = item.lastZoomMode {
+                self.zoomMode = savedZoom
+            }
         }
+        isRestoring = false
+
         self.isLoading = true
         self.loadingStatus = "Opening book…"
         let format = item.format
@@ -221,7 +283,14 @@ final class ReaderModel: ObservableObject {
     }
 
     func persistProgress() {
-        library.updateProgress(itemID: itemID, page: currentPage, pageCount: pageCount)
+        library.updateProgress(
+            itemID: itemID,
+            page: currentPage,
+            pageCount: pageCount,
+            direction: direction,
+            zoomMode: zoomMode,
+            textZoom: Double(textZoom)
+        )
     }
 
     func close() {

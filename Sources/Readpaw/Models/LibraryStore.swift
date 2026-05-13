@@ -49,11 +49,19 @@ final class LibraryStore: ObservableObject {
         items.first(where: { $0.id == id })
     }
 
-    func updateProgress(itemID: ComicItem.ID, page: Int, pageCount: Int?) {
+    func updateProgress(itemID: ComicItem.ID,
+                         page: Int,
+                         pageCount: Int?,
+                         direction: ReadingDirection? = nil,
+                         zoomMode: ZoomMode? = nil,
+                         textZoom: Double? = nil) {
         guard let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
         items[idx].lastReadPage = page
         items[idx].lastOpened = Date()
         if let pc = pageCount { items[idx].pageCount = pc }
+        if let direction { items[idx].lastDirection = direction }
+        if let zoomMode { items[idx].lastZoomMode = zoomMode }
+        if let textZoom { items[idx].lastTextZoom = textZoom }
         saveLibrary()
     }
 
