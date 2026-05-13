@@ -303,7 +303,7 @@ struct ReaderView: View {
         .onAppear {
             if model.value == nil {
                 let m = ReaderModel(itemID: itemID, library: library)
-                model.value = m
+                model.install(m)
                 m.load()
             }
         }
@@ -481,6 +481,20 @@ struct ReaderView: View {
 @MainActor
 final class ReaderModelHolder: ObservableObject {
     @Published var value: ReaderModel?
+    private var innerSubscription: AnyCancellable?
+
+    /// Install the reader model and bridge its `objectWillChange` to ours so
+    /// any @Published change on the inner model (isLoading, pageCount,
+    /// currentPage, loadingStatus, …) makes ReaderView re-render. Without
+    /// this, the body only re-renders when `value` itself is reassigned, so
+    /// the view stays frozen on its initial snapshot.
+    func install(_ model: ReaderModel) {
+        innerSubscription?.cancel()
+        innerSubscription = model.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
+        value = model
+    }
 }
 
 struct JumpToPageView: View {
