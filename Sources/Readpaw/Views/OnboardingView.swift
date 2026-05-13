@@ -11,10 +11,10 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 32)
 
-                GlobeView(size: 420)
-                    .frame(width: 460, height: 460)
-                    .shadow(color: Color(red: 0.30, green: 0.55, blue: 1.0).opacity(0.18),
-                            radius: 60, x: 0, y: 0)
+                GalaxyView()
+                    .frame(width: 520, height: 520)
+                    .shadow(color: Color(red: 0.55, green: 0.40, blue: 1.0).opacity(0.22),
+                            radius: 70, x: 0, y: 0)
 
                 Spacer(minLength: 24)
 
@@ -43,9 +43,9 @@ struct OnboardingView: View {
                         .background(
                             Capsule()
                                 .fill(Color.white)
-                                .shadow(color: Color(red: 0.5, green: 0.75, blue: 1.0).opacity(0.55),
+                                .shadow(color: Color(red: 0.62, green: 0.55, blue: 1.0).opacity(0.55),
                                         radius: 30, x: 0, y: 0)
-                                .shadow(color: Color.white.opacity(0.25), radius: 12, x: 0, y: 0)
+                                .shadow(color: Color.white.opacity(0.22), radius: 12, x: 0, y: 0)
                         )
                 }
                 .buttonStyle(.plain)

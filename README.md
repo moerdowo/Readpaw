@@ -21,7 +21,7 @@ Comics/manga support uses `/usr/bin/tar` (bsdtar / libarchive) that ships with m
 
 ## Features
 
-- **First-launch welcome screen** with a procedurally-generated 3D Earth and a calm navy gradient.
+- **First-launch welcome screen** with a procedurally-generated rotating spiral galaxy over a calm navy gradient.
 - **Library** with cover thumbnails (first image for comics, EPUB/FB2 cover image, or a stylized placeholder for text formats). Search, sort by title / date added / recently opened, and resize cover cards on the fly.
 - **Reader window** opens on double-click. Adapts to content type:
   - **Comics/manga:** reading direction (LTR, RTL for manga, vertical webtoon), zoom modes (Fit Page/Width/Height/Actual/50–200%), double-page spread, dark/light page background, click-edges to flip.
@@ -66,8 +66,8 @@ Sources/Readpaw/
 │   ├── TxtReader.swift         # TXT / HTML / FB2 readers + EbookStyle wrapper
 │   └── EbookStyle.swift        # shared HTML chrome (typography, dark mode)
 ├── Views/
-│   ├── OnboardingView.swift    # welcome screen with 3D globe + pill CTA
-│   ├── GlobeView.swift         # SceneKit globe, lights, halo, spin animation
+│   ├── OnboardingView.swift    # welcome screen with rotating galaxy + pill CTA
+│   ├── GalaxyView.swift        # SceneKit scene: tilted spinning galaxy disc + static starfield
 │   ├── LibraryView.swift       # grid of covers, search, sort, scan progress
 │   ├── ReaderView.swift        # reader shell + toolbar + content dispatch
 │   ├── PagedReaderView.swift   # single/double-page mode (NSScrollView zoom)
@@ -77,7 +77,7 @@ Sources/Readpaw/
 │   └── ReaderWindowController.swift
 └── Utilities/
     ├── NSImage+Resize.swift
-    └── EarthTexture.swift      # procedural Earth via value-noise fbm
+    └── GalaxyTexture.swift     # procedural galaxy spiral + starfield (value-noise fbm)
 Resources/Info.plist             # bundled by build-app.sh
 scripts/build-app.sh             # SwiftPM build → Readpaw.app
 ```
@@ -90,4 +90,4 @@ scripts/build-app.sh             # SwiftPM build → Readpaw.app
 - EPUBs are extracted to `~/Library/Caches/Readpaw/Books/<uuid>/` while open; the workspace is removed when the reader closes.
 - The chosen folder is stored as a security-scoped bookmark in `UserDefaults`.
 - DRM'd MOBI/AZW files cannot be opened; HUFF/CDIC-compressed variants are not yet supported.
-- The Earth texture is generated at runtime by sampling 3D value noise on the unit sphere — no image assets shipped.
+- The galaxy texture is generated at runtime: a logarithmic multi-arm spiral with a warm bulge, blue arms, dust lanes from noise, and a separate starfield drawn with additive blending. No image assets shipped.

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 
 /// Headless verification of every `ContentReader` against a folder of books.
 /// Invoked from the synthesized `main` when `--smoke-test <folder>` is passed.
@@ -47,5 +48,39 @@ enum SmokeTest {
             }
         }
         if !any { print("(no supported files found)") }
+    }
+
+    /// `--dump-galaxy <png-path>` — writes a sample galaxy texture for visual review.
+    static func dumpGalaxy(to path: String) {
+        guard let cg = GalaxyTexture.makeSpiral(size: 1024, arms: 4, twist: 3.4, armWidth: 0.32) else {
+            print("Failed to generate galaxy texture")
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            print("Failed to open destination at \(path)")
+            return
+        }
+        CGImageDestinationAddImage(dest, cg, nil)
+        if CGImageDestinationFinalize(dest) {
+            print("Wrote galaxy texture to \(path)")
+        } else {
+            print("Failed to write image to \(path)")
+        }
+    }
+
+    static func dumpStarfield(to path: String) {
+        guard let cg = GalaxyTexture.makeStarfield(size: 1024, density: 800) else {
+            print("Failed to generate starfield texture")
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            print("Failed to open destination at \(path)")
+            return
+        }
+        CGImageDestinationAddImage(dest, cg, nil)
+        _ = CGImageDestinationFinalize(dest)
+        print("Wrote starfield to \(path)")
     }
 }

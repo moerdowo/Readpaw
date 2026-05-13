@@ -9,6 +9,14 @@ enum AppMain {
             SmokeTest.run(folder: args[idx + 1])
             exit(0)
         }
+        if let idx = args.firstIndex(of: "--dump-galaxy"), idx + 1 < args.count {
+            SmokeTest.dumpGalaxy(to: args[idx + 1])
+            exit(0)
+        }
+        if let idx = args.firstIndex(of: "--dump-starfield"), idx + 1 < args.count {
+            SmokeTest.dumpStarfield(to: args[idx + 1])
+            exit(0)
+        }
         ReadpawApp.main()
     }
 }
