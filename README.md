@@ -119,6 +119,12 @@ scripts/
 - DRM'd MOBI/AZW files cannot be opened; HUFF/CDIC-compressed MOBI variants are not yet supported. Both will be silently skipped during scan now that unreadable files are filtered out.
 - The app icon is the compass-in-glass-bubble image in `Resources/AppIcon-source.png`; `scripts/make-appicon.swift` masks it with the macOS Big Sur+ squircle (≈ 22.37 % corner radius) and emits an `.icns` containing every required size.
 
+## Credits
+
+The 3D model on the onboarding screen — [`Resources/Color_orb.usdz`](Sources/Readpaw/Resources/Color_orb.usdz) — is by **[Tamminen](https://sketchfab.com/tamminen)** on Sketchfab, used under the Creative Commons Attribution license (CC BY). Many thanks for releasing it freely.
+
 ## License
 
-MIT.
+The Readpaw source code is MIT-licensed (see [`LICENSE`](LICENSE)).
+
+The bundled `Color_orb.usdz` model retains its original CC BY license; reuse it under the same terms and credit Tamminen.
