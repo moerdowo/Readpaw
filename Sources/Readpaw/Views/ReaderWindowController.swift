@@ -19,8 +19,9 @@ final class ReaderWindowController: NSObject {
             .environmentObject(library)
 
         let hosting = NSHostingController(rootView: AnyView(root))
+        let initialSize = ReaderWindowController.preferredContentSize(for: item, library: library)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800),
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -29,8 +30,19 @@ final class ReaderWindowController: NSObject {
         window.contentViewController = hosting
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = false
-        window.setFrameAutosaveName("Reader-\(itemID.uuidString)")
-        window.center()
+        window.contentMinSize = NSSize(width: 520, height: 600)
+
+        // Honor any previously-saved window frame (so resizes stick across
+        // launches), but on the very first open size the window to the
+        // content's aspect ratio so the page isn't cropped or letterboxed.
+        let autosaveName = "Reader-\(itemID.uuidString)"
+        let frameKey = "NSWindow Frame \(autosaveName)"
+        let hasSavedFrame = UserDefaults.standard.string(forKey: frameKey) != nil
+        window.setFrameAutosaveName(autosaveName)
+        if !hasSavedFrame {
+            window.setContentSize(initialSize)
+            window.center()
+        }
 
         let delegate = WindowDelegate { [weak self] in
             guard let self else { return }
@@ -47,6 +59,53 @@ final class ReaderWindowController: NSObject {
 
     func bringToFront(itemID: ComicItem.ID) {
         windows[itemID]?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Sizes the reader window so the page area roughly matches the content's
+    /// aspect ratio (so comics and manga pages aren't letterboxed or cropped).
+    /// We derive the ratio from the cached cover thumbnail when available;
+    /// ebooks fall back to a comfortable reading-column ratio because their
+    /// text reflows. Result is clamped to a reasonable fraction of the screen.
+    private static func preferredContentSize(for item: ComicItem, library: LibraryStore) -> NSSize {
+        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+
+        // width / height
+        let pageRatio: CGFloat
+        if item.format.isEbook {
+            pageRatio = 0.72
+        } else if let thumb = library.thumbnailImage(for: item),
+                  thumb.size.width > 0, thumb.size.height > 0 {
+            pageRatio = thumb.size.width / thumb.size.height
+        } else {
+            pageRatio = 0.68 // typical portrait comic
+        }
+
+        // Reserve room for the reader's toolbar and bottom slider.
+        let chrome: CGFloat = 96
+        let maxH = min(screen.height * 0.90, 1400)
+        let minH: CGFloat = 720
+        let maxW = screen.width * 0.85
+        let minW: CGFloat = 600
+
+        var height = min(maxH, max(minH, screen.height * 0.84))
+        let pageHeight = height - chrome
+        var width = pageHeight * pageRatio
+
+        if width > maxW {
+            width = maxW
+            height = (width / pageRatio) + chrome
+        }
+        if width < minW {
+            width = minW
+            height = (width / pageRatio) + chrome
+        }
+        if height > maxH {
+            height = maxH
+            let ph = height - chrome
+            width = ph * pageRatio
+        }
+
+        return NSSize(width: width.rounded(), height: height.rounded())
     }
 
     private final class WindowDelegate: NSObject, NSWindowDelegate {
