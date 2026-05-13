@@ -47,7 +47,6 @@ final class ReaderModel: ObservableObject {
     @Published var backgroundDark: Bool = true
     @Published var loadError: String?
     @Published var isLoading: Bool = true
-    @Published var doublePage: Bool = false
     @Published var isTextBook: Bool = false
     @Published var textZoom: CGFloat = 1.0
 
@@ -151,25 +150,34 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    /// Decode neighbouring pages in parallel so flipping forward is instant.
+    /// The current index gets requested first (it'll already be in-flight from
+    /// the visible view, but this is harmless thanks to the prefetchTasks dedupe
+    /// in image(at:)).
     func prefetchAround(_ index: Int) async {
         guard !isTextBook else { return }
         let radius = 2
-        for offset in -radius...radius {
-            let i = index + offset
-            if i >= 0 && i < pageCount {
-                _ = await image(at: i)
+        await withTaskGroup(of: Void.self) { group in
+            for offset in -radius...radius {
+                let i = index + offset
+                if i >= 0 && i < pageCount {
+                    group.addTask { [weak self] in
+                        _ = await self?.image(at: i)
+                    }
+                }
             }
         }
     }
 
-    func goNext() {
-        let step = (doublePage && !isTextBook) ? 2 : 1
-        setPage(currentPage + step)
-    }
+    func goNext() { setPage(currentPage + 1) }
+    func goPrev() { setPage(currentPage - 1) }
 
-    func goPrev() {
-        let step = (doublePage && !isTextBook) ? 2 : 1
-        setPage(currentPage - step)
+    /// The cover thumbnail for the current book, used as a low-res placeholder
+    /// while page 0 is being decoded so the reader never opens to a blank
+    /// progress spinner.
+    func coverThumbnail() -> NSImage? {
+        guard let item = library.item(withID: itemID) else { return nil }
+        return library.thumbnailImage(for: item)
     }
 
     func setPage(_ index: Int) {
@@ -364,16 +372,6 @@ struct ReaderView: View {
                         Label(m.zoomMode.label, systemImage: "magnifyingglass")
                     }
                     .help("Zoom")
-
-                    Toggle(isOn: Binding(
-                        get: { m.doublePage },
-                        set: { m.doublePage = $0 })
-                    ) {
-                        Image(systemName: m.doublePage ? "book.pages.fill" : "book.pages")
-                    }
-                    .toggleStyle(.button)
-                    .help("Double-page spread")
-                    .disabled(m.direction == .vertical)
                 }
 
                 Toggle(isOn: Binding(

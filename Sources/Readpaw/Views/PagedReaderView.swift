@@ -6,27 +6,14 @@ struct PagedReaderView: View {
 
     var body: some View {
         GeometryReader { geo in
-            HStack(spacing: 12) {
-                pageContent(geometry: geo.size)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture { location in
-                handleClick(at: location, container: geo.size)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func pageContent(geometry: CGSize) -> some View {
-        if model.doublePage && model.pageCount > 1 {
-            // Show two pages side by side. In RTL the order is swapped.
-            let leftIndex = model.direction == .rightToLeft ? model.currentPage + 1 : model.currentPage
-            let rightIndex = model.direction == .rightToLeft ? model.currentPage : model.currentPage + 1
-            ZoomablePageView(model: model, pageIndex: leftIndex, displaySize: CGSize(width: geometry.width / 2, height: geometry.height))
-            ZoomablePageView(model: model, pageIndex: rightIndex, displaySize: CGSize(width: geometry.width / 2, height: geometry.height))
-        } else {
-            ZoomablePageView(model: model, pageIndex: model.currentPage, displaySize: geometry)
+            ZoomablePageView(model: model,
+                             pageIndex: model.currentPage,
+                             displaySize: geo.size)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { location in
+                    handleClick(at: location, container: geo.size)
+                }
         }
     }
 
@@ -47,12 +34,27 @@ struct ZoomablePageView: View {
     let displaySize: CGSize
 
     @State private var image: NSImage?
-    @State private var loadTask: Task<Void, Never>?
+    @State private var placeholder: NSImage?
 
     var body: some View {
         Group {
             if let img = image {
                 ZoomScrollView(image: img, zoomMode: model.zoomMode)
+            } else if let placeholder = placeholder {
+                // Show the cached cover thumbnail (already on disk) as a soft,
+                // slightly-blurred placeholder while the real first page
+                // decodes — so the reader never opens to an empty spinner.
+                ZStack {
+                    Image(nsImage: placeholder)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fit)
+                        .blur(radius: 6)
+                        .opacity(0.65)
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(model.backgroundDark ? .white : .black)
+                }
             } else {
                 ZStack {
                     Color.clear
@@ -64,20 +66,24 @@ struct ZoomablePageView: View {
         }
         .frame(width: displaySize.width, height: displaySize.height)
         .clipped()
-        .onAppear(perform: loadImage)
-        .onChange(of: pageIndex) { loadImage() }
-        .onDisappear { loadTask?.cancel() }
+        // .task(id:) cancels and restarts the decode when pageIndex changes,
+        // and runs reliably on first appearance (unlike .onAppear which has
+        // ordering quirks inside GeometryReader).
+        .task(id: pageIndex) {
+            await loadCurrent()
+        }
     }
 
-    private func loadImage() {
-        loadTask?.cancel()
-        self.image = nil
+    @MainActor
+    private func loadCurrent() async {
+        image = nil
+        // Only the first page gets a cover placeholder — for subsequent
+        // pages the prefetch usually has them ready before the task even runs.
+        placeholder = (pageIndex == 0) ? model.coverThumbnail() : nil
         guard pageIndex >= 0, pageIndex < model.pageCount else { return }
-        loadTask = Task { @MainActor in
-            let img = await model.image(at: pageIndex)
-            if !Task.isCancelled {
-                self.image = img
-            }
+        let img = await model.image(at: pageIndex)
+        if !Task.isCancelled, img != nil {
+            image = img
         }
     }
 }
