@@ -9,6 +9,12 @@ struct PagedReaderView: View {
             ZoomablePageView(model: model,
                              pageIndex: model.currentPage,
                              displaySize: geo.size)
+                // Tie SwiftUI view identity to the current page so each page
+                // change tears down the previous ZoomScrollView and builds a
+                // fresh NSScrollView. Without this, pinch-zoom magnification
+                // can leak across pages because the underlying scroll view
+                // is reused.
+                .id(model.currentPage)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .onTapGesture { location in
@@ -126,10 +132,15 @@ struct ZoomScrollView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let container = context.coordinator.container else { return }
-        if container.imageView?.image !== image {
+        let imageChanged = container.imageView?.image !== image
+        if imageChanged {
             container.imageView?.image = image
             container.frame = NSRect(origin: .zero, size: image.size)
             container.imageView?.frame = container.bounds
+            // Reset any previous pinch-zoom synchronously so the new page
+            // doesn't paint at the old page's magnification. The async pass
+            // below refines the layout once the contentView bounds settle.
+            applyZoom(scroll: scroll, container: container)
         }
         DispatchQueue.main.async {
             applyZoom(scroll: scroll, container: container)
