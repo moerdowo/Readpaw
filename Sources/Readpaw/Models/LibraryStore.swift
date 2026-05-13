@@ -145,9 +145,18 @@ final class LibraryStore: ObservableObject {
         return out
     }
 
+    private enum ThumbnailResult {
+        case ok                   // reader opened, cover saved
+        case readableButNoCover   // reader opened, cover render failed — keep item, use placeholder
+        case unreadable           // reader couldn't open the file at all — drop it from the library
+    }
+
     private func generateMissingThumbnails() async {
         let snapshot = await MainActor.run { self.items }
+        var idsToRemove: [ComicItem.ID] = []
         for (idx, item) in snapshot.enumerated() {
+            // If the item already has a valid on-disk thumbnail, leave it
+            // alone — we trust an earlier scan validated it.
             if item.thumbnailFileName != nil,
                let url = thumbnailURL(for: item),
                FileManager.default.fileExists(atPath: url.path) {
@@ -156,16 +165,45 @@ final class LibraryStore: ObservableObject {
             await MainActor.run {
                 self.scanProgress = "Cover \(idx + 1) of \(snapshot.count)…"
             }
-            await generateThumbnail(for: item)
+            let result = await generateThumbnail(for: item)
+            if case .unreadable = result {
+                idsToRemove.append(item.id)
+            }
+        }
+
+        if !idsToRemove.isEmpty {
+            await MainActor.run {
+                let toRemove = Set(idsToRemove)
+                self.items.removeAll { toRemove.contains($0.id) }
+                self.saveLibrary()
+            }
         }
     }
 
-    private func generateThumbnail(for item: ComicItem) async {
-        guard let reader = try? ArchiveFactory.makeReader(for: item) else { return }
+    private func generateThumbnail(for item: ComicItem) async -> ThumbnailResult {
+        // Opening the archive / parsing the document is the canonical
+        // readability check: every reader's init validates structure (PDF
+        // password, archive signature, EPUB OPF, MOBI palmdb, etc.) and
+        // throws on failure. If we can't even open it, the user has no
+        // hope of reading it — drop it from the library.
+        let reader: ContentReader
+        do {
+            reader = try ArchiveFactory.makeReader(for: item)
+        } catch {
+            return .unreadable
+        }
         defer { reader.close() }
-        guard let cover = (try? reader.coverImage()) ?? nil else { return }
+
+        guard let cover = (try? reader.coverImage()) ?? nil else {
+            // Reader opened but cover failed — keep the item, since the
+            // book is still readable. Library card falls back to the
+            // generic placeholder.
+            return .readableButNoCover
+        }
         let thumb = cover.resized(maxDimension: 600)
-        guard let data = thumb.jpegData(compressionQuality: 0.82) else { return }
+        guard let data = thumb.jpegData(compressionQuality: 0.82) else {
+            return .readableButNoCover
+        }
         let filename = "\(item.id.uuidString).jpg"
         let url = thumbnailsDirectory.appendingPathComponent(filename)
         do {
@@ -179,8 +217,9 @@ final class LibraryStore: ObservableObject {
                     self.saveLibrary()
                 }
             }
+            return .ok
         } catch {
-            // ignore
+            return .readableButNoCover
         }
     }
 
