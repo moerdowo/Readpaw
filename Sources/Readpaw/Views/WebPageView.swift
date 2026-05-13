@@ -86,7 +86,29 @@ struct WebPageView: NSViewRepresentable {
     // Links re-override after the sweep so we don't nuke the link colour we
     // want. Visited links and headings get an explicit pass too to make
     // sure publisher CSS like `:visited` doesn't slip through.
+    // Shared reading-margin rules pinned to body so EPUB chapters get the
+    // same comfortable left/right padding as the MOBI/TXT wrapper. The
+    // `max(28px, calc(50% - 380px))` formula gives a content column that's
+    // ≤ 760px wide and centered, with a minimum 28-px side gutter on narrow
+    // windows. `max-width` on the body itself stops EPUBs that hard-code a
+    // narrower width from collapsing further inside our padding.
+    static let marginCSS = """
+    html { margin: 0 !important; padding: 0 !important; }
+    body {
+        margin: 0 auto !important;
+        padding: 48px max(28px, calc(50% - 380px)) !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+    body img, body figure, body table {
+        max-width: 100% !important;
+        height: auto !important;
+        box-sizing: border-box !important;
+    }
+    """
+
     static let darkCSS = """
+    \(marginCSS)
     html, body { background: transparent !important; color: #e6ecf2 !important; }
     body, body * { color: #e6ecf2 !important; }
     body a, body a *, body a:visited, body a:visited * { color: #6fa8ff !important; }
@@ -94,6 +116,7 @@ struct WebPageView: NSViewRepresentable {
     """
 
     static let lightCSS = """
+    \(marginCSS)
     html, body { background: transparent !important; color: #1c1c1f !important; }
     body, body * { color: #1c1c1f !important; }
     body a, body a *, body a:visited, body a:visited * { color: #1b66c9 !important; }
