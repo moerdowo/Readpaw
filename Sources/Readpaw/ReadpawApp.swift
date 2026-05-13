@@ -27,6 +27,7 @@ struct ReadpawApp: App {
                 .environmentObject(library)
                 .environmentObject(openBooks)
                 .frame(minWidth: 900, minHeight: 600)
+                .preferredColorScheme(.dark)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
                 }
