@@ -1,0 +1,424 @@
+import SwiftUI
+import AppKit
+import Combine
+
+enum ReadingDirection: String, CaseIterable, Identifiable, Codable {
+    case leftToRight = "Left to Right"
+    case rightToLeft = "Right to Left"
+    case vertical = "Vertical (Webtoon)"
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .leftToRight: return "arrow.right"
+        case .rightToLeft: return "arrow.left"
+        case .vertical: return "arrow.down"
+        }
+    }
+}
+
+enum ZoomMode: Equatable, Hashable {
+    case fitWidth
+    case fitHeight
+    case fitPage
+    case actual
+    case custom(CGFloat) // multiplier, 1.0 = 100%
+
+    var label: String {
+        switch self {
+        case .fitWidth: return "Fit Width"
+        case .fitHeight: return "Fit Height"
+        case .fitPage: return "Fit Page"
+        case .actual: return "Actual Size"
+        case .custom(let v): return "\(Int(v * 100))%"
+        }
+    }
+}
+
+@MainActor
+final class ReaderModel: ObservableObject {
+    let itemID: ComicItem.ID
+    let library: LibraryStore
+
+    @Published var pageCount: Int = 0
+    @Published var currentPage: Int = 0
+    @Published var direction: ReadingDirection = .leftToRight
+    @Published var zoomMode: ZoomMode = .fitPage
+    @Published var backgroundDark: Bool = true
+    @Published var loadError: String?
+    @Published var isLoading: Bool = true
+    @Published var doublePage: Bool = false
+
+    private var reader: ArchiveReader?
+    private var prefetchTasks: [Int: Task<NSImage?, Never>] = [:]
+    private var pageCache = NSCache<NSNumber, NSImage>()
+    private let decodeQueue = DispatchQueue(label: "Readpaw.Decode", qos: .userInitiated, attributes: .concurrent)
+    private var saveDebouncer: AnyCancellable?
+    private let saveSubject = PassthroughSubject<Void, Never>()
+
+    init(itemID: ComicItem.ID, library: LibraryStore) {
+        self.itemID = itemID
+        self.library = library
+        pageCache.countLimit = 6
+
+        saveDebouncer = saveSubject
+            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .sink { [weak self] in self?.persistProgress() }
+    }
+
+    func load() {
+        guard let item = library.item(withID: itemID) else {
+            self.loadError = "Book not found."
+            self.isLoading = false
+            return
+        }
+        isLoading = true
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                let r = try ArchiveFactory.makeReader(for: item)
+                let count = try r.pageCount()
+                await MainActor.run {
+                    self.reader = r
+                    self.pageCount = count
+                    self.currentPage = max(0, min(item.lastReadPage, max(0, count - 1)))
+                    self.isLoading = false
+                }
+                await self.prefetchAround(self.currentPage)
+            } catch {
+                await MainActor.run {
+                    self.loadError = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    func image(at index: Int) async -> NSImage? {
+        if index < 0 || index >= pageCount { return nil }
+        if let cached = pageCache.object(forKey: NSNumber(value: index)) {
+            return cached
+        }
+        if let inFlight = prefetchTasks[index] {
+            return await inFlight.value
+        }
+        let task = makeDecodeTask(index: index)
+        prefetchTasks[index] = task
+        let img = await task.value
+        prefetchTasks.removeValue(forKey: index)
+        return img
+    }
+
+    private func makeDecodeTask(index: Int) -> Task<NSImage?, Never> {
+        return Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return nil }
+            guard let reader = await self.reader else { return nil }
+            do {
+                let img = try reader.image(at: index)
+                await MainActor.run {
+                    self.pageCache.setObject(img, forKey: NSNumber(value: index))
+                }
+                return img
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    func prefetchAround(_ index: Int) async {
+        let radius = 2
+        for offset in -radius...radius {
+            let i = index + offset
+            if i >= 0 && i < pageCount {
+                _ = await image(at: i)
+            }
+        }
+    }
+
+    func goNext() {
+        let step = doublePage ? 2 : 1
+        setPage(currentPage + step)
+    }
+
+    func goPrev() {
+        let step = doublePage ? 2 : 1
+        setPage(currentPage - step)
+    }
+
+    func setPage(_ index: Int) {
+        let clamped = max(0, min(pageCount - 1, index))
+        currentPage = clamped
+        Task { await prefetchAround(clamped) }
+        saveSubject.send(())
+    }
+
+    func persistProgress() {
+        library.updateProgress(itemID: itemID, page: currentPage, pageCount: pageCount)
+    }
+
+    func close() {
+        reader?.close()
+        reader = nil
+        prefetchTasks.values.forEach { $0.cancel() }
+        prefetchTasks.removeAll()
+        pageCache.removeAllObjects()
+        persistProgress()
+    }
+}
+
+struct ReaderView: View {
+    let itemID: ComicItem.ID
+    @EnvironmentObject var library: LibraryStore
+    @StateObject private var model: ReaderModelHolder = ReaderModelHolder()
+    @State private var jumpPageText: String = ""
+    @State private var showJumpField: Bool = false
+
+    var body: some View {
+        ZStack {
+            (model.value?.backgroundDark ?? true ? Color.black : Color.white)
+                .ignoresSafeArea()
+
+            Group {
+                if let m = model.value {
+                    if m.isLoading {
+                        ProgressView("Loading…")
+                            .controlSize(.large)
+                            .foregroundStyle(m.backgroundDark ? .white : .black)
+                    } else if let err = m.loadError {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.orange)
+                            Text("Couldn't open this file")
+                                .font(.title3.bold())
+                            Text(err)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 30)
+                        }
+                        .foregroundStyle(m.backgroundDark ? .white : .black)
+                    } else if m.pageCount > 0 {
+                        if m.direction == .vertical {
+                            VerticalPagesView(model: m)
+                        } else {
+                            PagedReaderView(model: m)
+                        }
+                    } else {
+                        Text("No pages.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .toolbar { toolbarContent }
+        .safeAreaInset(edge: .bottom) {
+            if let m = model.value, m.pageCount > 0, !m.isLoading {
+                bottomBar(model: m)
+            }
+        }
+        .background(KeyEventHandlingView { event in
+            handleKey(event: event)
+        })
+        .onAppear {
+            if model.value == nil {
+                let m = ReaderModel(itemID: itemID, library: library)
+                model.value = m
+                m.load()
+            }
+        }
+        .onDisappear {
+            model.value?.close()
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button {
+                model.value?.goPrev()
+            } label: {
+                Image(systemName: (model.value?.direction == .rightToLeft) ? "chevron.right" : "chevron.left")
+            }
+            .help("Previous page")
+
+            Button {
+                model.value?.goNext()
+            } label: {
+                Image(systemName: (model.value?.direction == .rightToLeft) ? "chevron.left" : "chevron.right")
+            }
+            .help("Next page")
+        }
+
+        ToolbarItemGroup(placement: .principal) {
+            if let m = model.value {
+                HStack(spacing: 8) {
+                    Button {
+                        showJumpField.toggle()
+                        jumpPageText = "\(m.currentPage + 1)"
+                    } label: {
+                        Text("Page \(m.currentPage + 1) / \(m.pageCount)")
+                            .font(.callout.monospacedDigit())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Jump to page")
+                    .popover(isPresented: $showJumpField) {
+                        JumpToPageView(
+                            text: $jumpPageText,
+                            pageCount: m.pageCount
+                        ) { newPage in
+                            m.setPage(newPage - 1)
+                            showJumpField = false
+                        }
+                        .padding()
+                    }
+                }
+            }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let m = model.value {
+                Picker("Direction", selection: Binding(
+                    get: { m.direction },
+                    set: { m.direction = $0 })
+                ) {
+                    ForEach(ReadingDirection.allCases) { d in
+                        Label(d.rawValue, systemImage: d.systemImage).tag(d)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 170)
+                .help("Reading direction")
+
+                Menu {
+                    Button("Fit Page") { m.zoomMode = .fitPage }
+                    Button("Fit Width") { m.zoomMode = .fitWidth }
+                    Button("Fit Height") { m.zoomMode = .fitHeight }
+                    Button("Actual Size") { m.zoomMode = .actual }
+                    Divider()
+                    Button("50%") { m.zoomMode = .custom(0.5) }
+                    Button("75%") { m.zoomMode = .custom(0.75) }
+                    Button("100%") { m.zoomMode = .custom(1.0) }
+                    Button("150%") { m.zoomMode = .custom(1.5) }
+                    Button("200%") { m.zoomMode = .custom(2.0) }
+                } label: {
+                    Label(m.zoomMode.label, systemImage: "magnifyingglass")
+                }
+                .help("Zoom")
+
+                Toggle(isOn: Binding(
+                    get: { m.doublePage },
+                    set: { m.doublePage = $0 })
+                ) {
+                    Image(systemName: m.doublePage ? "book.pages.fill" : "book.pages")
+                }
+                .toggleStyle(.button)
+                .help("Double-page spread")
+                .disabled(m.direction == .vertical)
+
+                Toggle(isOn: Binding(
+                    get: { m.backgroundDark },
+                    set: { m.backgroundDark = $0 })
+                ) {
+                    Image(systemName: m.backgroundDark ? "moon.fill" : "sun.max.fill")
+                }
+                .toggleStyle(.button)
+                .help("Toggle background")
+            }
+        }
+    }
+
+    private func bottomBar(model m: ReaderModel) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Text("\(m.currentPage + 1)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 36, alignment: .trailing)
+
+                PageSlider(
+                    value: Binding(
+                        get: { Double(m.currentPage) },
+                        set: { m.setPage(Int($0.rounded())) }
+                    ),
+                    range: 0...Double(max(0, m.pageCount - 1)),
+                    reversed: m.direction == .rightToLeft
+                )
+
+                Text("\(m.pageCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 36, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .background(.black.opacity(0.55))
+    }
+
+    private func handleKey(event: NSEvent) -> Bool {
+        guard let m = model.value else { return false }
+        let leftKey: UInt16 = 123
+        let rightKey: UInt16 = 124
+        let spaceKey: UInt16 = 49
+        let pageUp: UInt16 = 116
+        let pageDown: UInt16 = 121
+        let homeKey: UInt16 = 115
+        let endKey: UInt16 = 119
+
+        switch event.keyCode {
+        case leftKey:
+            m.direction == .rightToLeft ? m.goNext() : m.goPrev()
+            return true
+        case rightKey:
+            m.direction == .rightToLeft ? m.goPrev() : m.goNext()
+            return true
+        case spaceKey, pageDown:
+            m.goNext()
+            return true
+        case pageUp:
+            m.goPrev()
+            return true
+        case homeKey:
+            m.setPage(0)
+            return true
+        case endKey:
+            m.setPage(m.pageCount - 1)
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+@MainActor
+final class ReaderModelHolder: ObservableObject {
+    @Published var value: ReaderModel?
+}
+
+struct JumpToPageView: View {
+    @Binding var text: String
+    let pageCount: Int
+    var onSubmit: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Jump to page (1 – \(pageCount))")
+                .font(.callout)
+            HStack {
+                TextField("Page", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+                    .onSubmit(submit)
+                Button("Go", action: submit)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .frame(width: 220)
+    }
+
+    private func submit() {
+        if let n = Int(text), n >= 1, n <= pageCount {
+            onSubmit(n)
+        }
+    }
+}
