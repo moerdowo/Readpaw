@@ -42,6 +42,16 @@ if [[ -d "${RES_BUNDLE}" ]]; then
   cp -R "${RES_BUNDLE}" "${BUNDLE_DIR}/Contents/Resources/"
 fi
 
+# Also copy the resources flat into Contents/Resources/ so Bundle.main can
+# find them directly. This lets USDZView.locateResource skip Bundle.module
+# (whose initializer calls `fatalError` if the SPM bundle is missing from
+# disk, which has been observed to SIGTRAP packaged .apps on some macOS
+# versions). Copying twice costs ~150 KB.
+for r in Sources/Readpaw/Resources/*; do
+  [[ -e "$r" ]] || continue
+  cp -R "$r" "${BUNDLE_DIR}/Contents/Resources/"
+done
+
 # Ad-hoc codesign so Gatekeeper lets it run locally.
 codesign --force --deep --sign - "${BUNDLE_DIR}" 2>/dev/null || true
 

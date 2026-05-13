@@ -18,7 +18,16 @@ struct ReadpawApp: App {
     @StateObject private var openBooks = OpenBooks()
 
     init() {
-        NSApplication.shared.setActivationPolicy(.regular)
+        // Only force `.regular` when launched as a plain executable (e.g.
+        // `swift run`), where nothing has promoted us out of the "background
+        // process" activation policy and we'd otherwise come up without a
+        // Dock icon or menu bar. When launched as a .app bundle,
+        // NSApplicationMain has already set the policy from Info.plist;
+        // calling it again from inside App.init has been observed to race
+        // SwiftUI startup and SIGTRAP on some macOS versions.
+        if Bundle.main.bundleIdentifier == nil {
+            NSApplication.shared.setActivationPolicy(.regular)
+        }
     }
 
     var body: some Scene {

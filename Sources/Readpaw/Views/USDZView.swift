@@ -33,7 +33,7 @@ struct USDZView: NSViewRepresentable {
         scene.lightingEnvironment.intensity = 0.45
         view.scene = scene
 
-        if let url = Bundle.module.url(forResource: resourceName, withExtension: "usdz"),
+        if let url = USDZView.locateResource(named: resourceName, ext: "usdz"),
            let loaded = try? SCNScene(url: url) {
             let rotor = SCNNode()
             rotor.name = "USDZRotor"
@@ -61,6 +61,43 @@ struct USDZView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: SCNView, context: Context) {}
+
+    /// Find a bundled resource without touching `Bundle.module`. `Bundle.module`
+    /// is a lazily-initialized static whose initializer calls `fatalError`
+    /// when the SPM-generated resource bundle isn't on disk where it expects —
+    /// which traps the process with EXC_BREAKPOINT (SIGTRAP) on launch.
+    /// We instead look in the candidate paths a packaged .app actually has,
+    /// and gracefully return nil if nothing's there so the onboarding view
+    /// can just render without the 3D model instead of crashing the app.
+    fileprivate static func locateResource(named name: String, ext: String) -> URL? {
+        let fm = FileManager.default
+
+        // 1. Directly under the .app's Resources/ (where build-app.sh now
+        //    copies the USDZ alongside the SPM bundle).
+        if let direct = Bundle.main.url(forResource: name, withExtension: ext),
+           fm.fileExists(atPath: direct.path) {
+            return direct
+        }
+
+        // 2. Inside the SPM-generated resource bundle that lives at
+        //    Contents/Resources/Readpaw_Readpaw.bundle/<name>.<ext>.
+        let spmBundle = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/Readpaw_Readpaw.bundle")
+            .appendingPathComponent("\(name).\(ext)")
+        if fm.fileExists(atPath: spmBundle.path) {
+            return spmBundle
+        }
+
+        // 3. Next to the executable when running via `swift run` (no .app).
+        let next = Bundle.main.bundleURL
+            .appendingPathComponent("Readpaw_Readpaw.bundle")
+            .appendingPathComponent("\(name).\(ext)")
+        if fm.fileExists(atPath: next.path) {
+            return next
+        }
+
+        return nil
+    }
 
     private func frameCamera(in scene: SCNScene, around node: SCNNode) {
         let (minB, maxB) = node.boundingBox
