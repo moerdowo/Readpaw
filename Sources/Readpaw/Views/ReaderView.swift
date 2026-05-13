@@ -198,8 +198,30 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func goNext() { setPage(currentPage + 1) }
-    func goPrev() { setPage(currentPage - 1) }
+    /// For text-based books, intra-chapter paging is handled inside the
+    /// WKWebView. WebPageView wires these closures up after each chapter
+    /// finishes loading; we invoke them here instead of advancing the chapter
+    /// directly. The WebView decides whether to scroll to the next column or
+    /// (if already at the end) post a "next-chapter" message back to us via
+    /// WKScriptMessageHandler — which lands as a `setPage` from the receiver.
+    var textNextPageAction: (() -> Void)?
+    var textPrevPageAction: (() -> Void)?
+
+    func goNext() {
+        if isTextBook, let action = textNextPageAction {
+            action()
+            return
+        }
+        setPage(currentPage + 1)
+    }
+
+    func goPrev() {
+        if isTextBook, let action = textPrevPageAction {
+            action()
+            return
+        }
+        setPage(currentPage - 1)
+    }
 
     /// The cover thumbnail for the current book, used as a low-res placeholder
     /// while page 0 is being decoded so the reader never opens to a blank
@@ -231,6 +253,8 @@ final class ReaderModel: ObservableObject {
         prefetchTasks.removeAll()
         pageCache.removeAllObjects()
         contentCache.removeAll()
+        textNextPageAction = nil
+        textPrevPageAction = nil
         persistProgress()
     }
 }
@@ -545,7 +569,7 @@ struct TextPageView: View {
                     content: content,
                     darkMode: model.backgroundDark,
                     zoom: model.textZoom,
-                    onScrollToTop: {}
+                    model: model
                 )
             } else {
                 ProgressView()
