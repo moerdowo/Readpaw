@@ -7,7 +7,7 @@ import SceneKit
 /// USDZ is SceneKit-native — no third-party loader needed.
 struct USDZView: NSViewRepresentable {
     var resourceName: String = "Color_orb"
-    var spinDuration: Double = 70
+    var spinDuration: Double = 180
 
     func makeCoordinator() -> Coordinator {
         Coordinator(spinDuration: spinDuration)
