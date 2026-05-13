@@ -47,6 +47,7 @@ final class ReaderModel: ObservableObject {
     @Published var backgroundDark: Bool = true
     @Published var loadError: String?
     @Published var isLoading: Bool = true
+    @Published var loadingStatus: String = "Opening book…"
     @Published var isTextBook: Bool = false
     @Published var textZoom: CGFloat = 1.0
 
@@ -79,23 +80,51 @@ final class ReaderModel: ObservableObject {
             self.direction = .vertical
             self.zoomMode = .fitWidth
         }
-        isLoading = true
+        self.isLoading = true
+        self.loadingStatus = "Opening book…"
         let format = item.format
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
+                // 1. Open the archive / parse the table of contents.
                 let r = try ArchiveFactory.makeReader(for: item)
                 let count = try r.pageCount()
                 let last = item.lastReadPage
+                let initialPage = max(0, min(last, max(0, count - 1)))
+
+                await MainActor.run {
+                    self.loadingStatus = "Decoding page \(initialPage + 1)…"
+                }
+
+                // 2. For image-based books, decode the first page *here* inside
+                //    the same detached task. This means the reader UI never
+                //    appears with an empty page — by the time `isLoading` flips
+                //    to false the visible page is already in `pageCache`, so
+                //    ZoomablePageView.task picks it up synchronously on first
+                //    paint instead of showing a second spinner.
+                var firstPageImage: NSImage?
+                if !format.isEbook {
+                    if let content = try? r.content(at: initialPage),
+                       case .image(let img) = content {
+                        firstPageImage = img
+                    }
+                }
+
                 await MainActor.run {
                     self.reader = r
                     self.pageCount = count
-                    self.currentPage = max(0, min(last, max(0, count - 1)))
-                    self.isLoading = false
+                    self.currentPage = initialPage
+                    if let img = firstPageImage {
+                        self.pageCache.setObject(img, forKey: NSNumber(value: initialPage))
+                    }
                     self.isTextBook = format.isEbook
+                    self.isLoading = false
                 }
+
+                // 3. Warm the neighbours in the background — outside the
+                //    perceived load critical path.
                 if !format.isEbook {
-                    await self.prefetchAround(self.currentPage)
+                    await self.prefetchAround(initialPage)
                 }
             } catch {
                 await MainActor.run {
@@ -231,7 +260,7 @@ struct ReaderView: View {
             Group {
                 if let m = model.value {
                     if m.isLoading {
-                        ProgressView("Loading…")
+                        ProgressView(m.loadingStatus)
                             .controlSize(.large)
                             .foregroundStyle(m.backgroundDark ? .white : .black)
                     } else if let err = m.loadError {
