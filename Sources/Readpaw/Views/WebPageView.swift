@@ -56,8 +56,14 @@ struct WebPageView: NSViewRepresentable {
 
     private func applyDark(_ web: WKWebView) {
         let css = darkMode ? Self.darkCSS : Self.lightCSS
+        let scheme = darkMode ? "dark" : "light"
         let js = """
         (function() {
+            // 1. Tell the document which color scheme we're rendering in so
+            //    `prefers-color-scheme` media queries inside the book's own
+            //    stylesheet resolve to the right branch.
+            document.documentElement.style.colorScheme = '\(scheme)';
+            // 2. Replace our injected override stylesheet.
             let id = 'readpaw-style';
             let existing = document.getElementById(id);
             if (existing) existing.remove();
@@ -71,12 +77,15 @@ struct WebPageView: NSViewRepresentable {
     }
 
     private static var darkCSSScript: WKUserScript {
+        // Declare both schemes are supported so a flash of unstyled content
+        // adopts the OS appearance until applyDark() runs with the reader's
+        // current darkMode value.
         let js = """
         (function() {
             let attach = function() {
                 let s = document.createElement('style');
                 s.id = 'readpaw-style-boot';
-                s.textContent = `:root { color-scheme: dark; }`;
+                s.textContent = `:root { color-scheme: dark light; }`;
                 document.head ? document.head.appendChild(s) : document.documentElement.appendChild(s);
             };
             if (document.readyState === 'loading') {
@@ -87,17 +96,22 @@ struct WebPageView: NSViewRepresentable {
         return WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
+    // The `body *` selector with !important nukes any color the EPUB/MOBI
+    // author set on individual elements (p, h1, span, etc.) — they often
+    // bake in white text expecting a dark theme, which becomes invisible in
+    // light mode. Links re-override after the sweep so we don't nuke the
+    // link colour we want.
     private static let darkCSS = """
     html, body { background: transparent !important; color: #e6ecf2 !important; }
-    body { color: #e6ecf2 !important; }
-    a { color: #6fa8ff !important; }
+    body, body * { color: #e6ecf2 !important; }
+    a, a * { color: #6fa8ff !important; }
     img { opacity: 0.95; }
     """
 
     private static let lightCSS = """
     html, body { background: transparent !important; color: #1c1c1f !important; }
-    body { color: #1c1c1f !important; }
-    a { color: #1b66c9 !important; }
+    body, body * { color: #1c1c1f !important; }
+    a, a * { color: #1b66c9 !important; }
     """
 
     final class Coordinator: NSObject, WKNavigationDelegate {

@@ -18,11 +18,27 @@ enum EbookStyle {
             margin: 0 auto;
             padding: 48px max(24px, calc(50% - 360px));
             max-width: 100%;
-            color: var(--fg, #e6ecf2);
-            background: var(--bg, transparent);
+            background: transparent;
             text-rendering: optimizeLegibility;
             -webkit-font-smoothing: antialiased;
             hyphens: auto;
+        }
+        /* Per-scheme text colors so a flash before our JS override still
+           reads, and so accent elements pick up the right palette in both
+           light and dark mode. */
+        @media (prefers-color-scheme: dark) {
+            body { color: #e6ecf2; }
+            a { color: #6fa8ff; }
+            blockquote { border-left: 3px solid rgba(255,255,255,0.25); color: rgba(230,236,242,0.85); }
+            pre { background: rgba(0,0,0,0.35); }
+            hr { background: rgba(255,255,255,0.15); }
+        }
+        @media (prefers-color-scheme: light) {
+            body { color: #1c1c1f; }
+            a { color: #1b66c9; }
+            blockquote { border-left: 3px solid rgba(0,0,0,0.18); color: rgba(28,28,31,0.78); }
+            pre { background: rgba(0,0,0,0.06); }
+            hr { background: rgba(0,0,0,0.12); }
         }
         h1, h2, h3, h4 { font-family: -apple-system, "New York", Georgia, serif; line-height: 1.25; }
         h1 { font-size: 1.8rem; margin-top: 1.4em; }
@@ -30,11 +46,10 @@ enum EbookStyle {
         h3 { font-size: 1.2rem; }
         p { margin: 0 0 0.95em; text-align: justify; }
         img { max-width: 100%; height: auto; display: block; margin: 1em auto; border-radius: 6px; }
-        a { color: #6fa8ff; }
-        blockquote { border-left: 3px solid rgba(255,255,255,0.25); padding-left: 1em; color: rgba(230,236,242,0.85); margin: 1em 0; }
+        blockquote { padding-left: 1em; margin: 1em 0; }
         pre, code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.95em; }
-        pre { background: rgba(0,0,0,0.35); padding: 1em; border-radius: 8px; overflow-x: auto; }
-        hr { border: 0; height: 1px; background: rgba(255,255,255,0.15); margin: 2em 0; }
+        pre { padding: 1em; border-radius: 8px; overflow-x: auto; }
+        hr { border: 0; height: 1px; margin: 2em 0; }
         </style></head><body>
         \(body)
         </body></html>
