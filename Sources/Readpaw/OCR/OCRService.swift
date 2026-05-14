@@ -155,10 +155,19 @@ extension OCRService {
     /// proximity. Two boxes join the same cluster when:
     ///
     /// - they're stacked vertically with a gap of less than ~1.5× the
-    ///   average box height AND their horizontal extents overlap (typical
-    ///   for multi-line speech bubbles), or
-    /// - they sit side-by-side with a small horizontal gap AND their
-    ///   vertical extents overlap (occasional run-on horizontal text).
+    ///   average box height AND their horizontal extents overlap
+    ///   substantially (typical for multi-line speech bubbles where each
+    ///   line is left-aligned under the previous one), or
+    /// - they're on the same baseline AND separated by less than a single
+    ///   space-width gap (Vision occasionally splits one line into two
+    ///   observations across a panel border or wide letter spacing).
+    ///
+    /// The horizontal-merge rule is intentionally tight: two text blocks
+    /// printed side-by-side inside the same bubble (e.g. a translated
+    /// page with two stacked sentences arranged as columns) have a
+    /// visible gap of at least one character-width between them. That
+    /// gap exceeds the threshold below, so the columns stay as separate
+    /// clusters and get translated as two distinct sentences.
     ///
     /// Inside each cluster, member boxes are sorted into reading order
     /// (top-to-bottom, then left-to-right) and joined with single spaces
@@ -169,9 +178,10 @@ extension OCRService {
         guard !boxes.isEmpty else { return [] }
 
         let avgHeight = boxes.map(\.rect.height).reduce(0, +) / CGFloat(boxes.count)
-        let avgWidth  = boxes.map(\.rect.width ).reduce(0, +) / CGFloat(boxes.count)
         let vGapTolerance = avgHeight * 1.5
-        let hGapTolerance = max(avgHeight, avgWidth) * 0.6
+        // ~one space-width — tight enough that two distinct text columns in
+        // the same bubble (separated by a character-width gap) stay split.
+        let hGapTolerance = avgHeight * 0.35
 
         // Union-find over the box indices.
         var parent = Array(0..<boxes.count)
@@ -197,10 +207,25 @@ extension OCRService {
                 // Overlap extent on the OTHER axis (positive = they share that span).
                 let hOverlap = min(r1.maxX, r2.maxX) - max(r1.minX, r2.minX)
                 let vOverlap = min(r1.maxY, r2.maxY) - max(r1.minY, r2.minY)
+                let smallerHeight = min(r1.height, r2.height)
+                let smallerWidth  = min(r1.width,  r2.width)
 
-                let verticallyStacked   = vGap <= vGapTolerance && hOverlap > 0
-                let horizontallyAdjacent = hGap <= hGapTolerance && vOverlap > 0
-                if verticallyStacked || horizontallyAdjacent {
+                // Vertical stacking: the two boxes need a real horizontal
+                // overlap relative to their own widths — not just any
+                // overlap, since adjacent columns might overlap by a single
+                // pixel and that shouldn't merge them.
+                let verticallyStacked =
+                    vGap <= vGapTolerance &&
+                    hOverlap > smallerWidth * 0.3
+
+                // Horizontal "same line" merge: the two boxes must share
+                // most of their vertical extent (i.e. clearly the same
+                // baseline) and sit a space's width apart at most.
+                let sameLineSplit =
+                    hGap <= hGapTolerance &&
+                    vOverlap > smallerHeight * 0.7
+
+                if verticallyStacked || sameLineSplit {
                     union(i, j)
                 }
             }
