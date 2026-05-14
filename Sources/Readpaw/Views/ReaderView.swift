@@ -141,9 +141,14 @@ final class ReaderModel: ObservableObject {
             if let savedDirection = item.lastDirection {
                 self.direction = savedDirection
             }
-            if let savedZoom = item.lastZoomMode {
-                self.zoomMode = savedZoom
-            }
+            // Image books (comics / manga / PDF) always open at Fit Page,
+            // regardless of whatever zoom the user happened to leave the
+            // book on last session. Pinch-zoom and toolbar zoom still work
+            // during reading — they just don't follow the book into its
+            // next open. This matches what most dedicated comic readers
+            // do and avoids accidentally landing on a 300%-pinched view
+            // a week later with no memory of why.
+            self.zoomMode = .fitPage
         }
         isRestoring = false
 
