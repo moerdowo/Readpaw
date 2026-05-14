@@ -1,28 +1,31 @@
 import SwiftUI
 import AppKit
 
-/// Sits on top of a comic / manga page when translate mode is on. Runs Vision
-/// OCR on the page once, then translates each detected text region with the
-/// active engine. Hovering a region pops a tooltip with the translation.
+/// Sits on top of a comic / manga page when translate mode is on. Vision OCR
+/// returns one observation per *line* of text, which is the wrong unit to
+/// translate against: a 3-line speech bubble would produce 3 disconnected
+/// translations that each miss the context of the other two. So before
+/// translation we group nearby line-observations into clusters (a cluster
+/// is "probably one speech bubble or caption"), join their text in reading
+/// order, and translate the joined sentence as a whole.
 ///
-/// Coordinate system: the overlay is sized to `displaySize` (the same frame
-/// as the underlying ZoomScrollView). OCR boxes are normalized image coords;
-/// `OCRBox.frameInView` maps them into the same aspect-fit-centered area the
-/// page is drawn into, so at .fitPage zoom the tooltips line up exactly with
-/// the speech bubbles. Pinch-zooming inside the scroll view scrolls the
-/// image but leaves the overlay anchored to the viewport — a known v1
-/// compromise, callers can encourage the user back to fit-page via the
-/// reader toolbar.
+/// Coordinate system: the overlay is sized to `displaySize`. OCR clusters
+/// carry normalized image-space rects (top-left origin, 0…1); their
+/// `frameInView` runs the same aspect-fit math the underlying ZoomScrollView
+/// uses so tooltips line up exactly with bubbles at .fitPage zoom. The
+/// SwiftUI body re-evaluates whenever `displaySize` changes, so resizing
+/// the window relocates every hit-rect automatically; ZoomScrollView's
+/// resize-aware re-zoom keeps the image underneath aligned to match.
 struct TranslateOverlayView: View {
     @ObservedObject var model: ReaderModel
     @ObservedObject var settings: TranslationSettings
     let displaySize: CGSize
 
     @State private var image: NSImage?
-    @State private var boxes: [OCRBox] = []
+    @State private var clusters: [OCRCluster] = []
     @State private var translations: [String: TranslationState] = [:]
-    @State private var hoveredBoxID: String?
-    @State private var pinnedBoxID: String?
+    @State private var hoveredClusterID: String?
+    @State private var pinnedClusterID: String?
 
     enum TranslationState: Equatable {
         case loading
@@ -33,19 +36,16 @@ struct TranslateOverlayView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if let img = image {
-                // The hit-target rectangles per box.
-                ForEach(Array(boxes.enumerated()), id: \.offset) { _, box in
-                    let frame = box.frameInView(imageSize: img.size, displaySize: displaySize)
+                ForEach(Array(clusters.enumerated()), id: \.offset) { _, cluster in
+                    let frame = cluster.frameInView(imageSize: img.size, displaySize: displaySize)
                     if frame.width > 2, frame.height > 2 {
-                        boxHitArea(box: box, frame: frame)
+                        clusterHitArea(cluster: cluster, frame: frame)
                     }
                 }
-                // The currently-shown tooltip rendered last so it's on top
-                // of all boxes.
-                if let id = activeBoxID,
-                   let box = boxes.first(where: { boxID($0) == id }) {
-                    let frame = box.frameInView(imageSize: img.size, displaySize: displaySize)
-                    tooltip(for: box, anchor: frame)
+                if let id = activeClusterID,
+                   let cluster = clusters.first(where: { clusterID($0) == id }) {
+                    let frame = cluster.frameInView(imageSize: img.size, displaySize: displaySize)
+                    tooltip(for: cluster, anchor: frame)
                 }
             }
         }
@@ -55,24 +55,24 @@ struct TranslateOverlayView: View {
             await loadAndScan()
         }
         .onChange(of: settings.engine) {
-            // If the user swapped engines mid-page, blow away any failed-
-            // translation entries so a hover retries with the new engine.
+            // Engine swap mid-page: drop failed entries so a hover retries
+            // with the new engine; keep loaded ones since the translation
+            // itself is still valid.
             translations = translations.filter { _, v in
                 if case .failed = v { return false } else { return true }
             }
         }
     }
 
-    private var activeBoxID: String? {
-        pinnedBoxID ?? hoveredBoxID
-    }
+    private var activeClusterID: String? { pinnedClusterID ?? hoveredClusterID }
 
     @ViewBuilder
-    private func boxHitArea(box: OCRBox, frame: CGRect) -> some View {
-        let id = boxID(box)
-        let isActive = (id == activeBoxID)
+    private func clusterHitArea(cluster: OCRCluster, frame: CGRect) -> some View {
+        let id = clusterID(cluster)
+        let isActive = (id == activeClusterID)
         Rectangle()
-            .strokeBorder(Color.yellow.opacity(isActive ? 0.95 : 0.50), lineWidth: isActive ? 1.6 : 1.0)
+            .strokeBorder(Color.yellow.opacity(isActive ? 0.95 : 0.50),
+                          lineWidth: isActive ? 1.6 : 1.0)
             .background(
                 Rectangle().fill(Color.yellow.opacity(isActive ? 0.18 : 0.08))
             )
@@ -80,30 +80,30 @@ struct TranslateOverlayView: View {
             .position(x: frame.midX, y: frame.midY)
             .onHover { hovering in
                 if hovering {
-                    hoveredBoxID = id
-                    // Lazy translate-on-first-hover for engines where a full
-                    // page pass would be expensive (OpenAI).
-                    if translations[box.text] == nil {
-                        kickOff(box: box)
+                    hoveredClusterID = id
+                    if translations[cluster.text] == nil {
+                        // Lazy translation kicks in on first hover for engines
+                        // we don't pre-translate (OpenAI).
+                        kickOff(cluster: cluster)
                     }
-                } else if hoveredBoxID == id {
-                    hoveredBoxID = nil
+                } else if hoveredClusterID == id {
+                    hoveredClusterID = nil
                 }
             }
             .onTapGesture {
-                pinnedBoxID = (pinnedBoxID == id) ? nil : id
-                if translations[box.text] == nil { kickOff(box: box) }
+                pinnedClusterID = (pinnedClusterID == id) ? nil : id
+                if translations[cluster.text] == nil { kickOff(cluster: cluster) }
             }
     }
 
     @ViewBuilder
-    private func tooltip(for box: OCRBox, anchor: CGRect) -> some View {
-        let state = translations[box.text] ?? .loading
+    private func tooltip(for cluster: OCRCluster, anchor: CGRect) -> some View {
+        let state = translations[cluster.text] ?? .loading
         VStack(alignment: .leading, spacing: 4) {
-            Text(box.text)
+            Text(cluster.text)
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(2)
+                .lineLimit(3)
             switch state {
             case .loading:
                 HStack(spacing: 6) {
@@ -124,7 +124,7 @@ struct TranslateOverlayView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(maxWidth: max(200, min(360, displaySize.width * 0.45)), alignment: .leading)
+        .frame(maxWidth: max(220, min(380, displaySize.width * 0.5)), alignment: .leading)
         .background(.black.opacity(0.88))
         .cornerRadius(10)
         .overlay(
@@ -138,20 +138,19 @@ struct TranslateOverlayView: View {
     }
 
     private func tooltipPosition(for anchor: CGRect) -> CGPoint {
-        // Default: above the bubble. If that would push us off the top,
-        // fall back to below.
         let preferAbove = anchor.minY > 80
-        let approxHeight: CGFloat = 70
-        let y = preferAbove ? max(approxHeight / 2, anchor.minY - approxHeight / 2 - 6)
-                            : min(displaySize.height - approxHeight / 2, anchor.maxY + approxHeight / 2 + 6)
-        let x = min(max(anchor.midX, 120), displaySize.width - 120)
+        let approxHeight: CGFloat = 80
+        let y = preferAbove
+            ? max(approxHeight / 2, anchor.minY - approxHeight / 2 - 6)
+            : min(displaySize.height - approxHeight / 2, anchor.maxY + approxHeight / 2 + 6)
+        let x = min(max(anchor.midX, 130), displaySize.width - 130)
         return CGPoint(x: x, y: y)
     }
 
-    private func boxID(_ box: OCRBox) -> String {
-        // Use rect + text so two identical strings at different positions
-        // can both be hovered independently.
-        "\(Int(box.rect.minX * 10000))-\(Int(box.rect.minY * 10000))-\(box.text)"
+    private func clusterID(_ cluster: OCRCluster) -> String {
+        // Position + text so identical sentences at different points on the
+        // page still get distinct hover state.
+        "\(Int(cluster.rect.minX * 10000))-\(Int(cluster.rect.minY * 10000))-\(cluster.text.prefix(40))"
     }
 
     // MARK: - OCR + translation
@@ -159,7 +158,7 @@ struct TranslateOverlayView: View {
     private func loadAndScan() async {
         guard model.translateMode else { return }
         translations = [:]
-        boxes = []
+        clusters = []
         image = nil
 
         guard let img = await model.image(at: model.currentPage) else { return }
@@ -170,22 +169,21 @@ struct TranslateOverlayView: View {
         let cleaned = detected.filter {
             $0.text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
         }
-        boxes = cleaned
+        let grouped = OCRService.cluster(cleaned).filter { !$0.text.isEmpty }
+        clusters = grouped
 
-        // Kick off translations in parallel for the free engines. For OpenAI
-        // we wait for user hover to avoid burning their quota on the whole
-        // page upfront.
+        // Free engines pre-translate the whole page so hovers are instant.
+        // OpenAI translates lazily on first hover so the user's quota isn't
+        // spent on bubbles that may never get looked at.
         if settings.engine != .openai {
-            for box in cleaned {
-                if translations[box.text] == nil {
-                    kickOff(box: box)
-                }
+            for cluster in grouped where translations[cluster.text] == nil {
+                kickOff(cluster: cluster)
             }
         }
     }
 
-    private func kickOff(box: OCRBox) {
-        let text = box.text
+    private func kickOff(cluster: OCRCluster) {
+        let text = cluster.text
         translations[text] = .loading
         let sourceCode = settings.sourceLanguage == .auto ? nil : settings.sourceLanguage.rawValue
         let target = settings.targetLanguage.rawValue

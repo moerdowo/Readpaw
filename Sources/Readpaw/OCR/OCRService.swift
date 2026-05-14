@@ -133,3 +133,124 @@ extension OCRBox {
         )
     }
 }
+
+/// A spatial cluster of OCR boxes that probably belong to the same speech
+/// bubble / caption / sign. Translating a whole cluster at once gives the
+/// engine the full sentence as context, instead of one line at a time.
+struct OCRCluster: Hashable {
+    let boxes: [OCRBox]
+    let rect: CGRect           // top-left-origin, normalized 0…1 — bounding box of all members
+    let text: String           // member texts joined in reading order
+
+    func frameInView(imageSize: CGSize, displaySize: CGSize) -> CGRect {
+        OCRBox(text: text, rect: rect, confidence: 1).frameInView(
+            imageSize: imageSize,
+            displaySize: displaySize
+        )
+    }
+}
+
+extension OCRService {
+    /// Group line-level OCR observations into per-bubble clusters by
+    /// proximity. Two boxes join the same cluster when:
+    ///
+    /// - they're stacked vertically with a gap of less than ~1.5× the
+    ///   average box height AND their horizontal extents overlap (typical
+    ///   for multi-line speech bubbles), or
+    /// - they sit side-by-side with a small horizontal gap AND their
+    ///   vertical extents overlap (occasional run-on horizontal text).
+    ///
+    /// Inside each cluster, member boxes are sorted into reading order
+    /// (top-to-bottom, then left-to-right) and joined with single spaces
+    /// for the translator. The cluster's `rect` is the union of all
+    /// member rects so the overlay can draw one hit-zone per bubble
+    /// instead of one per line.
+    nonisolated static func cluster(_ boxes: [OCRBox]) -> [OCRCluster] {
+        guard !boxes.isEmpty else { return [] }
+
+        let avgHeight = boxes.map(\.rect.height).reduce(0, +) / CGFloat(boxes.count)
+        let avgWidth  = boxes.map(\.rect.width ).reduce(0, +) / CGFloat(boxes.count)
+        let vGapTolerance = avgHeight * 1.5
+        let hGapTolerance = max(avgHeight, avgWidth) * 0.6
+
+        // Union-find over the box indices.
+        var parent = Array(0..<boxes.count)
+        func find(_ x: Int) -> Int {
+            var x = x
+            while parent[x] != x {
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            }
+            return x
+        }
+        func union(_ a: Int, _ b: Int) {
+            let ra = find(a), rb = find(b)
+            if ra != rb { parent[ra] = rb }
+        }
+
+        for i in 0..<boxes.count {
+            for j in (i + 1)..<boxes.count {
+                let r1 = boxes[i].rect, r2 = boxes[j].rect
+                // Edge-to-edge gap on each axis (negative = overlap).
+                let hGap = max(r1.minX - r2.maxX, r2.minX - r1.maxX)
+                let vGap = max(r1.minY - r2.maxY, r2.minY - r1.maxY)
+                // Overlap extent on the OTHER axis (positive = they share that span).
+                let hOverlap = min(r1.maxX, r2.maxX) - max(r1.minX, r2.minX)
+                let vOverlap = min(r1.maxY, r2.maxY) - max(r1.minY, r2.minY)
+
+                let verticallyStacked   = vGap <= vGapTolerance && hOverlap > 0
+                let horizontallyAdjacent = hGap <= hGapTolerance && vOverlap > 0
+                if verticallyStacked || horizontallyAdjacent {
+                    union(i, j)
+                }
+            }
+        }
+
+        var groupedIndices: [Int: [Int]] = [:]
+        for i in 0..<boxes.count {
+            groupedIndices[find(i), default: []].append(i)
+        }
+
+        return groupedIndices.values.map { indices in
+            let members = indices.map { boxes[$0] }
+            let sorted = sortInReadingOrder(members, avgHeight: avgHeight)
+            let combinedText = sorted.map(\.text)
+                .joined(separator: " ")
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let minX = sorted.map(\.rect.minX).min() ?? 0
+            let minY = sorted.map(\.rect.minY).min() ?? 0
+            let maxX = sorted.map(\.rect.maxX).max() ?? 0
+            let maxY = sorted.map(\.rect.maxY).max() ?? 0
+
+            return OCRCluster(
+                boxes: sorted,
+                rect: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                text: combinedText
+            )
+        }
+        // Stable order so tooltips don't shuffle between renders.
+        .sorted { lhs, rhs in
+            if abs(lhs.rect.minY - rhs.rect.minY) > 0.01 {
+                return lhs.rect.minY < rhs.rect.minY
+            }
+            return lhs.rect.minX < rhs.rect.minX
+        }
+    }
+
+    /// Sort boxes top-to-bottom, then left-to-right. Boxes whose vertical
+    /// midpoints fall within half a line height of each other are
+    /// considered the same "row" for the secondary left-to-right sort.
+    nonisolated private static func sortInReadingOrder(_ boxes: [OCRBox],
+                                                        avgHeight: CGFloat) -> [OCRBox] {
+        boxes.sorted { a, b in
+            let aMid = a.rect.midY
+            let bMid = b.rect.midY
+            if abs(aMid - bMid) <= avgHeight * 0.5 {
+                return a.rect.minX < b.rect.minX
+            }
+            return aMid < bMid
+        }
+    }
+}

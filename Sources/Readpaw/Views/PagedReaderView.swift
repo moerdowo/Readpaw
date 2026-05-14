@@ -204,6 +204,24 @@ struct ZoomScrollView: NSViewRepresentable {
                 }
             }
         }
+
+        // Window resize → re-apply the current zoom mode so the image keeps
+        // matching what e.g. .fitPage would now require. Without this the
+        // NSScrollView kept its old magnification across resizes, which
+        // drifts the image away from the translate overlay (whose box
+        // positions are recomputed from the new displaySize on every
+        // SwiftUI render).
+        let viewport = scroll.contentView.frame.size
+        if !imageChanged, !zoomModeChanged,
+           let last = coord.lastViewportSize,
+           (abs(last.width - viewport.width) > 0.5 || abs(last.height - viewport.height) > 0.5) {
+            DispatchQueue.main.async {
+                applyZoom(scroll: scroll, container: container, resetScroll: false)
+            }
+        }
+        if viewport.width > 0, viewport.height > 0 {
+            coord.lastViewportSize = viewport
+        }
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -283,6 +301,7 @@ struct ZoomScrollView: NSViewRepresentable {
         weak var container: FlippedClipContainer?
         var lastImage: NSImage?
         var lastZoomMode: ZoomMode = .fitPage
+        var lastViewportSize: CGSize?
         var onUserMagnify: (CGFloat) -> Void
         var suppressNextZoomApply: Bool = false
 
