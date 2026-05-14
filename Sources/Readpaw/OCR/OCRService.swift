@@ -56,22 +56,64 @@ final class OCRService {
         }
 
         let result = await Task.detached(priority: .userInitiated) {
-            OCRService.runVision(on: image, recognitionLanguage: recognitionLanguage)
+            OCRService.recognizeAllOrientations(in: image,
+                                                 recognitionLanguage: recognitionLanguage)
         }.value
 
         cache.setObject(result as NSArray, forKey: key)
         return result
     }
 
-    /// Synchronous Vision invocation. Runs on a background task in
-    /// `recognize(...)` so we don't block the main actor during OCR.
-    /// Marked `nonisolated` because the class is @MainActor for the cache
-    /// but this method touches no shared state of its own.
-    nonisolated private static func runVision(on image: NSImage,
-                                               recognitionLanguage: String?) -> [OCRBox] {
+    /// Drop the cached OCR results. Bound to the Clear Cache button in
+    /// the translate settings popover — also covers the case where the
+    /// user wants Vision to retry a page after switching language hints.
+    func clearCache() {
+        cache.removeAllObjects()
+    }
+
+    /// Two-pass OCR for CJK languages. Vision's current text-recognition
+    /// revision claims vertical-script support, but on real manga pages
+    /// it routinely returns zero observations for tategaki bubbles — the
+    /// internal layout pass classifies a tall narrow column as "not a
+    /// line" and never reads it. The workaround that actually works in
+    /// practice is to rotate the page 90° CCW so each vertical column
+    /// becomes an ordinary horizontal line, OCR that, then transform the
+    /// observation rects back into original-image coordinates. We merge
+    /// with the upright pass (dropping rects that already overlap an
+    /// upright observation) so a single page with mixed vertical bubbles
+    /// and horizontal sound-effects gets both read.
+    nonisolated private static func recognizeAllOrientations(in image: NSImage,
+                                                              recognitionLanguage: String?) -> [OCRBox] {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return []
         }
+        let upright = runVision(on: cgImage, recognitionLanguage: recognitionLanguage)
+
+        guard shouldRunRotatedPass(for: recognitionLanguage) else { return upright }
+        guard let rotated = rotated90CCW(cgImage) else { return upright }
+
+        let rotatedResults = runVision(on: rotated, recognitionLanguage: recognitionLanguage)
+        let unrotated = rotatedResults.map { box -> OCRBox in
+            // Inverse of the 90°-CCW rotation in normalized top-left-origin
+            // space: original = (1 - ry - rh, rx, rh, rw).
+            let r = box.rect
+            let mapped = CGRect(
+                x: 1.0 - r.minY - r.height,
+                y: r.minX,
+                width: r.height,
+                height: r.width
+            )
+            return OCRBox(text: box.text, rect: mapped, confidence: box.confidence)
+        }
+        return mergeDeduplicating(upright: upright, rotated: unrotated)
+    }
+
+    /// Synchronous Vision invocation against a CGImage. Runs on a
+    /// detached task in `recognize(...)` so the main actor stays free
+    /// during OCR. Marked `nonisolated` so it can be called from a
+    /// background context.
+    nonisolated private static func runVision(on cgImage: CGImage,
+                                               recognitionLanguage: String?) -> [OCRBox] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -125,6 +167,70 @@ final class OCRService {
         }
         // Vision returns one observation per *line* by default. For dense
         // speech bubbles that's usually right — each bubble is its own bubble.
+    }
+
+    /// Rotate the rotated pass on for CJK / Auto modes only. For Latin /
+    /// Cyrillic / Arabic etc. a rotated pass would just double the OCR
+    /// cost without finding any new text — those scripts never read
+    /// top-to-bottom.
+    nonisolated private static func shouldRunRotatedPass(for language: String?) -> Bool {
+        guard let language = language?.lowercased() else { return true }
+        return language.hasPrefix("ja") || language.hasPrefix("zh") || language.hasPrefix("ko")
+    }
+
+    /// Bitmap-rotate a CGImage 90° counter-clockwise. We feed the rotated
+    /// copy through Vision so vertical CJK columns become ordinary
+    /// horizontal lines: the topmost character of a column ends up at the
+    /// leftmost end of a row, which Vision handles reliably even when its
+    /// vertical-text path fails. The caller transforms the returned boxes
+    /// back into the original image's coordinate space.
+    nonisolated private static func rotated90CCW(_ cgImage: CGImage) -> CGImage? {
+        let w = cgImage.width
+        let h = cgImage.height
+        let newWidth = h
+        let newHeight = w
+        let colorSpace = cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(
+            data: nil,
+            width: newWidth,
+            height: newHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+        // CG's coordinate origin is bottom-left. translate(h, 0) then
+        // rotate(+π/2) draws the source so its visual top edge lands on
+        // the rotated canvas's visual left edge — a 90° CCW rotation when
+        // the image is viewed top-left-origin.
+        ctx.translateBy(x: CGFloat(h), y: 0)
+        ctx.rotate(by: .pi / 2)
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
+    /// Merge the upright and rotated OCR passes, dropping any rotated
+    /// observation whose rect already overlaps an upright observation by
+    /// more than ~40 % IoU. The upright version wins because its bounding
+    /// box is naturally aligned to the page and feeds the cluster
+    /// algorithm without surprises.
+    nonisolated private static func mergeDeduplicating(upright: [OCRBox],
+                                                        rotated: [OCRBox]) -> [OCRBox] {
+        var merged = upright
+        for r in rotated {
+            let isDup = upright.contains { u in iou(u.rect, r.rect) > 0.4 }
+            if !isDup { merged.append(r) }
+        }
+        return merged
+    }
+
+    nonisolated private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull, inter.width > 0, inter.height > 0 else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
     }
 
     /// When the user picks a CJK source language, also enable the related

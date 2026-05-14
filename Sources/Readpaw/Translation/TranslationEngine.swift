@@ -82,6 +82,18 @@ final class TranslationCache {
         }
         entries[key] = translation
     }
+
+    /// How many translations are currently held. Surfaced in the settings
+    /// popover so the Clear Cache button can show what it's about to drop.
+    var count: Int { entries.count }
+
+    /// Drop every cached translation. The next hover on each bubble will
+    /// re-translate against whichever engine + language pair is selected
+    /// at that moment. Useful when the user switches target language and
+    /// wants to see fresh translations of the bubbles still on screen.
+    func clear() {
+        entries.removeAll(keepingCapacity: false)
+    }
 }
 
 /// Factory that returns the appropriate concrete engine instance per kind.

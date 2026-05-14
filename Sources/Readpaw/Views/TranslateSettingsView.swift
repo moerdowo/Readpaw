@@ -8,6 +8,7 @@ struct TranslateSettingsView: View {
     @ObservedObject var settings: TranslationSettings
     @State private var apiKeyDraft: String = ""
     @State private var apiKeyTestStatus: TestStatus = .idle
+    @State private var lastCacheClearMessage: String?
 
     enum TestStatus: Equatable {
         case idle
@@ -120,11 +121,35 @@ struct TranslateSettingsView: View {
     }
 
     private var cacheBlock: some View {
-        HStack {
-            Text("Translation cache holds results in memory for this session.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top) {
+                Text("Translations and OCR results are kept in memory until you quit the app. Clear them if you want fresh OCR / translation for the page you're on.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button("Clear Cache") { clearCaches() }
+                if let message = lastCacheClearMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private func clearCaches() {
+        let translationCount = TranslationCache.shared.count
+        TranslationCache.shared.clear()
+        OCRService.shared.clearCache()
+        lastCacheClearMessage = "Cleared \(translationCount) translation\(translationCount == 1 ? "" : "s")"
+        // Fade the toast back out after a beat so the popover doesn't keep
+        // the success message around forever.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            lastCacheClearMessage = nil
         }
     }
 
