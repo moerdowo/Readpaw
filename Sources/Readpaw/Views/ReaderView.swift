@@ -100,6 +100,15 @@ final class ReaderModel: ObservableObject {
             // overlay is laid out against a single page. Turning one on
             // turns the other off.
             if translateMode, twoPageSpread { twoPageSpread = false }
+            // When the user turns translation on, the book "adopts" the
+            // current language pair so it re-opens the same way.
+            if translateMode, !isRestoring {
+                library.updateTranslateLanguages(
+                    itemID: itemID,
+                    source: TranslationSettings.shared.sourceLanguage.rawValue,
+                    target: TranslationSettings.shared.targetLanguage.rawValue
+                )
+            }
         }
     }
 
@@ -153,6 +162,7 @@ final class ReaderModel: ObservableObject {
     private let pageThumbCache = NSCache<NSNumber, NSImage>()
     private var saveDebouncer: AnyCancellable?
     private let saveSubject = PassthroughSubject<Void, Never>()
+    private var translateLangSub: AnyCancellable?
 
     init(itemID: ComicItem.ID, library: LibraryStore) {
         self.itemID = itemID
@@ -163,6 +173,22 @@ final class ReaderModel: ObservableObject {
         saveDebouncer = saveSubject
             .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.persistProgress() }
+
+        // While this book is being read with translate mode on, mirror
+        // any source/target language change back onto the library item
+        // so the book remembers its own language pair.
+        let settings = TranslationSettings.shared
+        translateLangSub = settings.$sourceLanguage
+            .combineLatest(settings.$targetLanguage)
+            .dropFirst()
+            .sink { [weak self] source, target in
+                guard let self, self.translateMode else { return }
+                self.library.updateTranslateLanguages(
+                    itemID: self.itemID,
+                    source: source.rawValue,
+                    target: target.rawValue
+                )
+            }
     }
 
     func load() {
@@ -179,6 +205,20 @@ final class ReaderModel: ObservableObject {
         isRestoring = true
         self.isTextBook = isText
         self.bookmarkedPages = Set(item.bookmarks ?? [])
+
+        // Re-apply this book's last translate-mode language pair to the
+        // shared settings so turning translation on picks up where the
+        // book left off. (Shared settings means the last-opened book
+        // wins if two are open at once — acceptable for the common
+        // one-book-at-a-time case.)
+        if let src = item.lastTranslateSource,
+           let lang = SupportedLanguage(rawValue: src) {
+            TranslationSettings.shared.sourceLanguage = lang
+        }
+        if let tgt = item.lastTranslateTarget,
+           let lang = SupportedLanguage(rawValue: tgt) {
+            TranslationSettings.shared.targetLanguage = lang
+        }
         if isText {
             self.direction = item.lastDirection ?? .vertical
             self.zoomMode  = item.lastZoomMode  ?? .fitWidth

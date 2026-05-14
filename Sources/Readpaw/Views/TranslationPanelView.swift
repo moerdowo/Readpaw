@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Side panel that lists every line VisionKit's `ImageAnalyzer` (Live
 /// Text) found on the current page plus its translation. Appears in
@@ -16,6 +17,9 @@ struct TranslationPanelView: View {
     /// the on-image overlay, but here the lifecycle is tied to
     /// `model.pageTranscriptLines` instead of the OCR cluster set.
     @State private var translations: [String: TranslationState] = [:]
+    /// Index of the card that just had something copied — drives a brief
+    /// "Copied" checkmark flash.
+    @State private var copiedFlashIndex: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -53,6 +57,16 @@ struct TranslationPanelView: View {
             Image(systemName: "character.bubble.fill").foregroundStyle(.tint)
             Text("Page Translation").font(.headline)
             Spacer()
+            if !model.pageTranscriptLines.isEmpty {
+                Button {
+                    copyAll()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.borderless)
+                .help("Copy all (original — translation)")
+            }
             Button {
                 model.translationPanelVisible = false
             } label: {
@@ -87,9 +101,9 @@ struct TranslationPanelView: View {
     private var content: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(Array(model.pageTranscriptLines.enumerated()), id: \.offset) { _, line in
+                ForEach(Array(model.pageTranscriptLines.enumerated()), id: \.offset) { index, line in
                     let state = translations[line] ?? .loading
-                    lineCard(original: line, state: state)
+                    lineCard(index: index, original: line, state: state)
                 }
             }
             .padding(.horizontal, 14)
@@ -98,13 +112,33 @@ struct TranslationPanelView: View {
     }
 
     @ViewBuilder
-    private func lineCard(original: String, state: TranslationState) -> some View {
+    private func lineCard(index: Int, original: String, state: TranslationState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(original)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                // Reading-order index — Live Text returns lines in
+                // reading order (right-to-left columns for vertical
+                // manga included), so the numbers match how you'd read
+                // the page.
+                Text("\(index + 1)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 16)
+                    .padding(.vertical, 1)
+                    .padding(.horizontal, 4)
+                    .background(.tint, in: Capsule())
+                Text(original)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if copiedFlashIndex == index {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+            }
             switch state {
             case .loading:
                 HStack(spacing: 6) {
@@ -136,6 +170,55 @@ struct TranslationPanelView: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
+        .contentShape(Rectangle())
+        // Tap copies the translation (the most useful thing to grab);
+        // the context menu offers original / translation explicitly.
+        // Live Text gives no per-line coordinates, so there's nothing
+        // to highlight on the page — copy is the honest interaction.
+        .onTapGesture {
+            if case .loaded(let translation) = state {
+                copyToPasteboard(translation, flashIndex: index)
+            } else {
+                copyToPasteboard(original, flashIndex: index)
+            }
+        }
+        .contextMenu {
+            Button("Copy Original") {
+                copyToPasteboard(original, flashIndex: index)
+            }
+            if case .loaded(let translation) = state {
+                Button("Copy Translation") {
+                    copyToPasteboard(translation, flashIndex: index)
+                }
+            }
+        }
+    }
+
+    // MARK: - Clipboard
+
+    private func copyToPasteboard(_ text: String, flashIndex: Int?) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        guard let flashIndex else { return }
+        withAnimation(.easeIn(duration: 0.1)) { copiedFlashIndex = flashIndex }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            withAnimation(.easeOut(duration: 0.2)) {
+                if copiedFlashIndex == flashIndex { copiedFlashIndex = nil }
+            }
+        }
+    }
+
+    /// Copy every line as "original — translation", one per line.
+    private func copyAll() {
+        let lines = model.pageTranscriptLines.map { original -> String in
+            if case .loaded(let translation) = translations[original] ?? .loading {
+                return "\(original) — \(translation)"
+            }
+            return original
+        }
+        copyToPasteboard(lines.joined(separator: "\n"), flashIndex: nil)
     }
 
     private func translate(_ lines: [String]) {

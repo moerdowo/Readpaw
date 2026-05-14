@@ -87,6 +87,17 @@ final class LibraryStore: ObservableObject {
         return item.id
     }
 
+    /// Remember the translate-mode language pair for a book so it
+    /// re-opens with the same source/target it was last read with.
+    func updateTranslateLanguages(itemID: ComicItem.ID, source: String, target: String) {
+        guard let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
+        guard items[idx].lastTranslateSource != source
+                || items[idx].lastTranslateTarget != target else { return }
+        items[idx].lastTranslateSource = source
+        items[idx].lastTranslateTarget = target
+        saveLibrary()
+    }
+
     /// Clear the File ▸ Open Recent menu by wiping `lastOpened` on every
     /// item. Reading progress (`lastReadPage`) is intentionally left
     /// untouched — this only forgets *when* books were opened.

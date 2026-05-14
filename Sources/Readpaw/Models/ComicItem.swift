@@ -82,6 +82,11 @@ struct ComicItem: Identifiable, Codable, Hashable {
     var lastTextZoom: Double?
     /// Whether the book was last read in two-page spread mode.
     var lastTwoPage: Bool?
+    /// Translate-mode source / target language last used for this book,
+    /// as `SupportedLanguage` raw values. Lets a Japanese manga and a
+    /// Chinese manhua remember their own language pairs.
+    var lastTranslateSource: String?
+    var lastTranslateTarget: String?
 
     /// Pages the user explicitly bookmarked within this book (0-based
     /// page indices). Sorted ascending. Optional for backward-compatible
@@ -109,6 +114,8 @@ struct ComicItem: Identifiable, Codable, Hashable {
         self.lastZoomMode = nil
         self.lastTextZoom = nil
         self.lastTwoPage = nil
+        self.lastTranslateSource = nil
+        self.lastTranslateTarget = nil
         self.bookmarks = nil
         self.isExternal = nil
     }

@@ -98,6 +98,18 @@ struct TranslateOverlayView: View {
                 pinnedClusterID = (pinnedClusterID == id) ? nil : id
                 if translations[cluster.text] == nil { kickOff(cluster: cluster) }
             }
+            .contextMenu {
+                Button("Copy Original") { copyToPasteboard(cluster.text) }
+                if case .loaded(let translation) = translations[cluster.text] {
+                    Button("Copy Translation") { copyToPasteboard(translation) }
+                }
+            }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
 
     @ViewBuilder
