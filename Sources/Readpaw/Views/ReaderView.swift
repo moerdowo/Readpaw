@@ -69,6 +69,22 @@ enum ZoomMode: Equatable, Hashable, Codable {
     }
 }
 
+/// One chapter entry in a text ebook's table of contents.
+struct TOCEntry: Identifiable, Hashable {
+    let id = UUID()
+    let pageIndex: Int
+    let title: String
+}
+
+/// A single in-book search match: which chapter, and a text snippet
+/// with the matched phrase in context.
+struct SearchHit: Identifiable, Hashable {
+    let id = UUID()
+    let chapterIndex: Int
+    let chapterTitle: String
+    let snippet: String
+}
+
 @MainActor
 final class ReaderModel: ObservableObject {
     let itemID: ComicItem.ID
@@ -132,6 +148,12 @@ final class ReaderModel: ObservableObject {
     /// Mirrors `ComicItem.bookmarks`; kept as a Set here for cheap
     /// membership tests and as `@Published` so the toolbar updates live.
     @Published var bookmarkedPages: Set<Int> = []
+
+    /// Chapter list for text-based ebooks, built once on load from the
+    /// reader's `pageTitle(at:)`. Empty for image books and for ebook
+    /// formats that don't expose chapter titles (MOBI/TXT/FB2/HTML) —
+    /// the TOC button only appears when this is non-empty.
+    @Published var tableOfContents: [TOCEntry] = []
 
     /// Live Text fallback content. Vision's text recogniser fails outright
     /// on stylised manga fonts (verified for Japanese and Chinese — zero
@@ -258,6 +280,19 @@ final class ReaderModel: ObservableObject {
                     initialPage -= initialPage % 2
                 }
 
+                // Build the table of contents for text ebooks from the
+                // reader's chapter titles. Done here in the detached task
+                // so a long spine doesn't block the main actor.
+                var toc: [TOCEntry] = []
+                if format.isEbook {
+                    for i in 0..<count {
+                        if let title = r.pageTitle(at: i),
+                           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            toc.append(TOCEntry(pageIndex: i, title: title))
+                        }
+                    }
+                }
+
                 await MainActor.run {
                     self.loadingStatus = "Decoding page \(initialPage + 1)…"
                 }
@@ -284,6 +319,7 @@ final class ReaderModel: ObservableObject {
                         self.pageCache.setObject(img, forKey: NSNumber(value: initialPage))
                     }
                     self.isTextBook = format.isEbook
+                    self.tableOfContents = toc
                     self.isLoading = false
                 }
 
@@ -314,6 +350,118 @@ final class ReaderModel: ObservableObject {
         let img = await task.value
         prefetchTasks.removeValue(forKey: index)
         return img
+    }
+
+    /// Chapter title for a text ebook page, if the format exposes one.
+    func chapterTitle(at index: Int) -> String? {
+        reader?.pageTitle(at: index)
+    }
+
+    // MARK: - In-book search
+
+    /// Search the whole book for `rawQuery`, returning per-match hits
+    /// with a context snippet. Chapter HTML is gathered on the main
+    /// actor (cheap — EPUB content is just a file URL) then read +
+    /// stripped + scanned on a background task.
+    func search(_ rawQuery: String) async -> [SearchHit] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2, isTextBook else { return [] }
+
+        var fileSources: [(index: Int, title: String, url: URL)] = []
+        var stringSources: [(index: Int, title: String, html: String)] = []
+        for i in 0..<pageCount {
+            guard let content = contentSync(at: i) else { continue }
+            let title = chapterTitle(at: i) ?? "Section \(i + 1)"
+            switch content {
+            case .htmlFile(let url, _):
+                fileSources.append((i, title, url))
+            case .htmlString(let html, _):
+                stringSources.append((i, title, html))
+            case .image:
+                break
+            }
+        }
+
+        return await Task.detached(priority: .userInitiated) {
+            var hits: [SearchHit] = []
+            for src in fileSources {
+                guard let html = try? String(contentsOf: src.url, encoding: .utf8) else { continue }
+                hits += ReaderModel.searchHits(in: html,
+                                                chapterIndex: src.index,
+                                                chapterTitle: src.title,
+                                                query: query)
+            }
+            for src in stringSources {
+                hits += ReaderModel.searchHits(in: src.html,
+                                                chapterIndex: src.index,
+                                                chapterTitle: src.title,
+                                                query: query)
+            }
+            return hits.sorted { $0.chapterIndex < $1.chapterIndex }
+        }.value
+    }
+
+    /// Find every (capped) occurrence of `query` in one chapter's HTML
+    /// and build a context snippet around each.
+    nonisolated static func searchHits(in html: String,
+                                        chapterIndex: Int,
+                                        chapterTitle: String,
+                                        query: String) -> [SearchHit] {
+        let text = htmlToPlainText(html)
+        guard !text.isEmpty else { return [] }
+        var hits: [SearchHit] = []
+        var searchStart = text.startIndex
+        let maxPerChapter = 15
+        while let range = text.range(of: query,
+                                      options: [.caseInsensitive],
+                                      range: searchStart..<text.endIndex) {
+            let pad = 45
+            let lo = text.index(range.lowerBound,
+                                 offsetBy: -pad,
+                                 limitedBy: text.startIndex) ?? text.startIndex
+            let hi = text.index(range.upperBound,
+                                 offsetBy: pad,
+                                 limitedBy: text.endIndex) ?? text.endIndex
+            var snippet = String(text[lo..<hi])
+            if lo != text.startIndex { snippet = "…" + snippet }
+            if hi != text.endIndex { snippet += "…" }
+            hits.append(SearchHit(chapterIndex: chapterIndex,
+                                   chapterTitle: chapterTitle,
+                                   snippet: snippet))
+            searchStart = range.upperBound
+            if hits.count >= maxPerChapter { break }
+        }
+        return hits
+    }
+
+    /// Lightweight HTML → plain text for search. Not a full parser: it
+    /// drops script/style blocks, strips tags, decodes the handful of
+    /// entities that actually matter for matching, and collapses
+    /// whitespace. Good enough to find a phrase; fast enough to run
+    /// over a whole book.
+    nonisolated static func htmlToPlainText(_ html: String) -> String {
+        var s = html
+        s = s.replacingOccurrences(of: "(?s)<script.*?</script>", with: " ",
+                                    options: .regularExpression)
+        s = s.replacingOccurrences(of: "(?s)<style.*?</style>", with: " ",
+                                    options: .regularExpression)
+        s = s.replacingOccurrences(of: "<[^>]+>", with: " ",
+                                    options: .regularExpression)
+        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&#160;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&rsquo;", with: "'")
+            .replacingOccurrences(of: "&lsquo;", with: "'")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&ldquo;", with: "\u{201C}")
+            .replacingOccurrences(of: "&rdquo;", with: "\u{201D}")
+            .replacingOccurrences(of: "&mdash;", with: "—")
+        s = s.replacingOccurrences(of: "\\s+", with: " ",
+                                    options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func contentSync(at index: Int) -> PageContent? {
@@ -506,18 +654,20 @@ struct ReaderView: View {
     let itemID: ComicItem.ID
     @EnvironmentObject var library: LibraryStore
     @StateObject private var model: ReaderModelHolder = ReaderModelHolder()
+    @ObservedObject private var ebook = EbookSettings.shared
     @State private var jumpPageText: String = ""
     @State private var showJumpField: Bool = false
     @State private var showingTranslateSettings: Bool = false
     @State private var showingPageGrid: Bool = false
     @State private var showingBookmarks: Bool = false
+    @State private var showingTOC: Bool = false
+    @State private var showingSearch: Bool = false
+    @State private var showingTextFormat: Bool = false
 
     private var backgroundColor: Color {
         guard let m = model.value else { return Color(red: 0.02, green: 0.04, blue: 0.10) }
         if m.isTextBook {
-            return m.backgroundDark
-                ? Color(red: 0.04, green: 0.07, blue: 0.16)
-                : Color(red: 0.97, green: 0.95, blue: 0.91)
+            return ebook.theme.windowBackground
         }
         return m.backgroundDark ? .black : .white
     }
@@ -643,7 +793,35 @@ struct ReaderView: View {
 
         ToolbarItemGroup(placement: .primaryAction) {
             if let m = model.value {
-                if !m.isTextBook {
+                if m.isTextBook {
+                    if !m.tableOfContents.isEmpty {
+                        Button {
+                            showingTOC.toggle()
+                        } label: {
+                            Image(systemName: "list.bullet.indent")
+                        }
+                        .help("Table of contents")
+                        .popover(isPresented: $showingTOC) {
+                            TableOfContentsView(model: m) { page in
+                                m.setPage(page)
+                                showingTOC = false
+                            }
+                        }
+                    }
+                    Button {
+                        showingSearch.toggle()
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .help("Search in book")
+                    .keyboardShortcut("f", modifiers: [.command])
+                    .popover(isPresented: $showingSearch) {
+                        BookSearchView(model: m) { page in
+                            m.setPage(page)
+                            showingSearch = false
+                        }
+                    }
+                } else {
                     Button {
                         showingPageGrid.toggle()
                     } label: {
@@ -705,17 +883,15 @@ struct ReaderView: View {
                 }
 
                 if m.isTextBook {
-                    Button { m.bumpTextZoom(-0.1) } label: {
-                        Image(systemName: "textformat.size.smaller")
+                    // Single "Aa" menu collecting text size, typeface,
+                    // line spacing, and colour theme — keeps the ebook
+                    // toolbar uncluttered.
+                    Menu {
+                        textFormatMenuContent(model: m)
+                    } label: {
+                        Image(systemName: "textformat")
                     }
-                    .help("Smaller text")
-                    Button { m.bumpTextZoom(+0.1) } label: {
-                        Image(systemName: "textformat.size.larger")
-                    }
-                    .help("Larger text")
-                    Text("\(Int(m.textZoom * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    .help("Text format")
                 } else {
                     Menu {
                         Button("Fit Page") { m.zoomMode = .fitPage }
@@ -732,20 +908,59 @@ struct ReaderView: View {
                         Label(m.zoomMode.label, systemImage: "magnifyingglass")
                     }
                     .help("Zoom")
-                }
 
-                Toggle(isOn: Binding(
-                    get: { m.backgroundDark },
-                    set: { m.backgroundDark = $0 })
-                ) {
-                    Image(systemName: m.backgroundDark ? "moon.fill" : "sun.max.fill")
-                }
-                .toggleStyle(.button)
-                .help("Toggle background")
+                    Toggle(isOn: Binding(
+                        get: { m.backgroundDark },
+                        set: { m.backgroundDark = $0 })
+                    ) {
+                        Image(systemName: m.backgroundDark ? "moon.fill" : "sun.max.fill")
+                    }
+                    .toggleStyle(.button)
+                    .help("Toggle background")
 
-                if !m.isTextBook {
                     translateControls(model: m)
                 }
+            }
+        }
+    }
+
+    /// Contents of the ebook "Aa" text-format menu: text size, typeface,
+    /// line spacing, and colour theme — all bound to the global
+    /// EbookSettings so the choice carries across books and windows.
+    @ViewBuilder
+    private func textFormatMenuContent(model m: ReaderModel) -> some View {
+        Section("Text Size") {
+            Button {
+                m.bumpTextZoom(-0.1)
+            } label: {
+                Label("Smaller", systemImage: "textformat.size.smaller")
+            }
+            Button {
+                m.bumpTextZoom(+0.1)
+            } label: {
+                Label("Larger", systemImage: "textformat.size.larger")
+            }
+            Text("\(Int(m.textZoom * 100))%")
+        }
+        Picker("Typeface", selection: $ebook.font) {
+            ForEach(EbookFont.allCases) { font in
+                Text(font.displayName).tag(font)
+            }
+        }
+        Menu("Line Spacing") {
+            Button("Tighter") {
+                ebook.lineSpacing = max(EbookSettings.minLineSpacing,
+                                         ebook.lineSpacing - 0.1)
+            }
+            Button("Looser") {
+                ebook.lineSpacing = min(EbookSettings.maxLineSpacing,
+                                         ebook.lineSpacing + 0.1)
+            }
+            Text(String(format: "%.1f×", ebook.lineSpacing))
+        }
+        Picker("Theme", selection: $ebook.theme) {
+            ForEach(EbookTheme.allCases) { theme in
+                Label(theme.displayName, systemImage: theme.symbolName).tag(theme)
             }
         }
     }
@@ -935,13 +1150,16 @@ struct JumpToPageView: View {
 
 struct TextPageView: View {
     @ObservedObject var model: ReaderModel
+    @ObservedObject private var ebook = EbookSettings.shared
 
     var body: some View {
         Group {
             if let content = model.contentSync(at: model.currentPage) {
                 WebPageView(
                     content: content,
-                    darkMode: model.backgroundDark,
+                    theme: ebook.theme,
+                    font: ebook.font,
+                    lineSpacing: ebook.lineSpacing,
                     zoom: model.textZoom,
                     onScrollToTop: {}
                 )

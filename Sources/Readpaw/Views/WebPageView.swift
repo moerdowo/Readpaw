@@ -4,7 +4,12 @@ import WebKit
 
 struct WebPageView: NSViewRepresentable {
     let content: PageContent
-    let darkMode: Bool
+    /// Reading colour scheme — drives both background and text colour.
+    let theme: EbookTheme
+    /// Reading typeface.
+    let font: EbookFont
+    /// CSS line-height multiplier.
+    let lineSpacing: Double
     let zoom: CGFloat
     let onScrollToTop: () -> Void
 
@@ -12,7 +17,7 @@ struct WebPageView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.userContentController.addUserScript(Self.darkCSSScript)
+        config.userContentController.addUserScript(Self.bootCSSScript)
 
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
@@ -20,25 +25,31 @@ struct WebPageView: NSViewRepresentable {
         web.underPageBackgroundColor = .clear
         web.pageZoom = zoom
         context.coordinator.lastContent = nil
-        context.coordinator.darkMode = darkMode
+        context.coordinator.style = currentStyle
         return web
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
         web.pageZoom = zoom
-        context.coordinator.darkMode = darkMode
+        context.coordinator.style = currentStyle
         let key = contentKey()
         if context.coordinator.lastContent != key {
             context.coordinator.lastContent = key
             load(into: web)
         }
-        applyDark(web)
+        applyStyle(web)
+    }
+
+    /// The full set of typography + colour inputs bundled so the
+    /// coordinator can re-inject the override after async navigation.
+    private var currentStyle: ReadingStyle {
+        ReadingStyle(theme: theme, font: font, lineSpacing: lineSpacing)
     }
 
     private func contentKey() -> String {
         switch content {
         case .htmlFile(let u, _): return "f:" + u.path
-        case .htmlString(let s, _): return "s:\(s.hashValue):\(darkMode)"
+        case .htmlString(let s, _): return "s:\(s.hashValue)"
         case .image: return "image"
         }
     }
@@ -54,15 +65,15 @@ struct WebPageView: NSViewRepresentable {
         }
     }
 
-    private func applyDark(_ web: WKWebView) {
-        web.evaluateJavaScript(Self.overrideScript(darkMode: darkMode),
+    private func applyStyle(_ web: WKWebView) {
+        web.evaluateJavaScript(Self.overrideScript(for: currentStyle),
                                completionHandler: nil)
     }
 
-    private static var darkCSSScript: WKUserScript {
+    private static var bootCSSScript: WKUserScript {
         // Declare both schemes are supported so a flash of unstyled content
-        // adopts the OS appearance until applyDark() runs with the reader's
-        // current darkMode value.
+        // adopts the OS appearance until applyStyle() runs with the
+        // reader's chosen theme.
         let js = """
         (function() {
             let attach = function() {
@@ -79,19 +90,18 @@ struct WebPageView: NSViewRepresentable {
         return WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    // The `body *` selector with !important nukes any color the EPUB/MOBI
-    // author set on individual elements (p, h1, span, etc.) — they often
-    // bake in dark text expecting a light theme (or light text expecting a
-    // dark theme), which becomes invisible against the opposite background.
-    // Links re-override after the sweep so we don't nuke the link colour we
-    // want. Visited links and headings get an explicit pass too to make
-    // sure publisher CSS like `:visited` doesn't slip through.
+    /// Bundle of everything that affects the injected stylesheet.
+    struct ReadingStyle: Equatable {
+        var theme: EbookTheme
+        var font: EbookFont
+        var lineSpacing: Double
+    }
+
     // Shared reading-margin rules pinned to body so EPUB chapters get the
     // same comfortable left/right padding as the MOBI/TXT wrapper. The
     // `max(28px, calc(50% - 380px))` formula gives a content column that's
     // ≤ 760px wide and centered, with a minimum 28-px side gutter on narrow
-    // windows. `max-width` on the body itself stops EPUBs that hard-code a
-    // narrower width from collapsing further inside our padding.
+    // windows.
     static let marginCSS = """
     html { margin: 0 !important; padding: 0 !important; }
     body {
@@ -107,24 +117,39 @@ struct WebPageView: NSViewRepresentable {
     }
     """
 
-    static let darkCSS = """
-    \(marginCSS)
-    html, body { background: transparent !important; color: #e6ecf2 !important; }
-    body, body * { color: #e6ecf2 !important; }
-    body a, body a *, body a:visited, body a:visited * { color: #6fa8ff !important; }
-    img { opacity: 0.95; }
-    """
+    /// Build the full override stylesheet for a given reading style.
+    /// The `body *` selector with `!important` nukes any colour the
+    /// EPUB/MOBI author baked into individual elements (they often
+    /// assume a light theme and ship dark-on-light text that becomes
+    /// invisible in dark mode). Font-family and line-height are pinned
+    /// to `body` only — applying them to `body *` would clobber `<pre>`
+    /// monospace and tight heading leading.
+    static func css(for style: ReadingStyle) -> String {
+        let t = style.theme
+        return """
+        \(marginCSS)
+        html, body { background: transparent !important; color: \(t.cssText) !important; }
+        body {
+            color: \(t.cssText) !important;
+            font-family: \(style.font.cssFamily) !important;
+            line-height: \(String(format: "%.2f", style.lineSpacing)) !important;
+        }
+        body p, body div, body span, body li, body td, body blockquote,
+        body h1, body h2, body h3, body h4, body h5, body h6 {
+            color: \(t.cssText) !important;
+        }
+        body a, body a *, body a:visited, body a:visited * { color: \(t.cssLink) !important; }
+        body img { opacity: \(t.isDark ? "0.95" : "1"); }
+        """
+    }
 
-    static let lightCSS = """
-    \(marginCSS)
-    html, body { background: transparent !important; color: #1c1c1f !important; }
-    body, body * { color: #1c1c1f !important; }
-    body a, body a *, body a:visited, body a:visited * { color: #1b66c9 !important; }
-    """
-
-    static func overrideScript(darkMode: Bool) -> String {
-        let css = darkMode ? darkCSS : lightCSS
-        let scheme = darkMode ? "dark" : "light"
+    static func overrideScript(for style: ReadingStyle) -> String {
+        let cssText = css(for: style)
+        let scheme = style.theme.isDark ? "dark" : "light"
+        // The window background is painted by SwiftUI behind the web
+        // view; we keep the page itself transparent so that shows
+        // through, but set color-scheme so form controls/scrollbars
+        // match.
         return """
         (function() {
             document.documentElement.style.colorScheme = '\(scheme)';
@@ -133,7 +158,7 @@ struct WebPageView: NSViewRepresentable {
             if (existing) existing.remove();
             let s = document.createElement('style');
             s.id = id;
-            s.textContent = `\(css.replacingOccurrences(of: "`", with: "\\`"))`;
+            s.textContent = `\(cssText.replacingOccurrences(of: "`", with: "\\`"))`;
             document.head ? document.head.appendChild(s) : document.documentElement.appendChild(s);
         })();
         """
@@ -141,7 +166,7 @@ struct WebPageView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastContent: String?
-        var darkMode: Bool = true
+        var style: ReadingStyle = ReadingStyle(theme: .dark, font: .serif, lineSpacing: 1.6)
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -164,7 +189,7 @@ struct WebPageView: NSViewRepresentable {
         // didFinish guarantees the override lands on the real document.
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.evaluateJavaScript(
-                WebPageView.overrideScript(darkMode: darkMode),
+                WebPageView.overrideScript(for: style),
                 completionHandler: nil
             )
         }
@@ -173,7 +198,7 @@ struct WebPageView: NSViewRepresentable {
         // sections inside one chapter). Re-applying on commit catches those.
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             webView.evaluateJavaScript(
-                WebPageView.overrideScript(darkMode: darkMode),
+                WebPageView.overrideScript(for: style),
                 completionHandler: nil
             )
         }
