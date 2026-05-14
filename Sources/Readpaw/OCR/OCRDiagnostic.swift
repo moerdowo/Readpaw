@@ -1,6 +1,9 @@
 import Foundation
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import Vision
+import VisionKit
 
 /// CLI diagnostic for the translate-mode OCR pipeline. Invoked via
 /// `swift run Readpaw --ocr-test <imagePath>`. Loads the image, runs
@@ -18,27 +21,182 @@ enum OCRDiagnostic {
         }
         print("Loaded: \(cgImage.width)×\(cgImage.height) (colorSpace: \(cgImage.colorSpace?.name as? String ?? "nil"))")
 
-        let langs: [(label: String, value: String?)] = [
-            ("auto",    nil),
-            ("ja-JP",   "ja-JP"),
-            ("zh-Hans", "zh-Hans"),
-            ("zh-Hant", "zh-Hant"),
+        // What does Vision claim it can OCR? If zh-Hans isn't in the list
+        // for the current revision, that's the whole story — no amount of
+        // rotation will help.
+        let rev = VNRecognizeTextRequest.currentRevision
+        print("\nVision currentRevision: \(rev)")
+        let accurateSupported = (try? VNRecognizeTextRequest.supportedRecognitionLanguages(
+            for: .accurate, revision: rev
+        )) ?? []
+        let fastSupported = (try? VNRecognizeTextRequest.supportedRecognitionLanguages(
+            for: .fast, revision: rev
+        )) ?? []
+        print("accurate supports: \(accurateSupported)")
+        print("fast supports:     \(fastSupported)")
+
+        // Save a copy of the CCW-rotated bitmap so we can eyeball it for
+        // correctness. If Vision returns nothing but the rotation looks
+        // wrong, that's where to start; if the rotation is correct but
+        // Vision still returns nothing, the issue is upstream.
+        if let rotated = rotated90CCW(cgImage) {
+            let outURL = URL(fileURLWithPath: "/tmp/readpaw-ocr-rotated.png")
+            saveCGImage(rotated, to: outURL)
+            print("\nSaved rotated copy to \(outURL.path)")
+        }
+
+        let configs: [(label: String, configure: (VNRecognizeTextRequest) -> Void)] = [
+            ("baseline (currentRevision, accurate, langCorr, zh-Hans+en)", { r in
+                r.recognitionLanguages = ["zh-Hans", "en-US"]
+                r.automaticallyDetectsLanguage = false
+            }),
+            ("baseline + minHeight=0.001", { r in
+                r.recognitionLanguages = ["zh-Hans", "en-US"]
+                r.automaticallyDetectsLanguage = false
+                r.minimumTextHeight = 0.001
+            }),
+            ("no langCorrection, zh-Hans", { r in
+                r.recognitionLanguages = ["zh-Hans"]
+                r.usesLanguageCorrection = false
+            }),
+            ("automaticallyDetectsLanguage=true", { r in
+                r.automaticallyDetectsLanguage = true
+            }),
+            ("revision3, all CJK languages", { r in
+                r.recognitionLanguages = ["zh-Hans", "zh-Hant", "yue-Hans", "yue-Hant", "ja-JP", "ko-KR"]
+                r.automaticallyDetectsLanguage = false
+            }),
         ]
 
-        for (label, lang) in langs {
-            print("\n=== \(label) — upright ===")
-            let upright = runVision(on: cgImage, lang: lang)
-            dump(upright)
+        // Run each config on upright + rotated + 2× upscaled + 2× upscaled-rotated.
+        // The upscale variants test the hypothesis that Vision's layout
+        // pass is dropping the bubbles because they're a small fraction
+        // of total image area.
+        let upscaled = upscale2x(cgImage)
+        let rotated = rotated90CCW(cgImage)
+        let rotatedUpscaled = upscaled.flatMap { rotated90CCW($0) }
 
-            print("\n=== \(label) — rotated 90° CCW ===")
-            guard let rotated = rotated90CCW(cgImage) else {
-                print("  (rotation produced nil — context init failed)")
-                continue
+        for (label, configure) in configs {
+            print("\n========== \(label) ==========")
+            print("  -- upright (\(cgImage.width)×\(cgImage.height))")
+            dump(runVision(on: cgImage, configure: configure))
+            if let r = rotated {
+                print("  -- rotated 90° CCW (\(r.width)×\(r.height))")
+                dump(runVision(on: r, configure: configure))
             }
-            print("  rotated size: \(rotated.width)×\(rotated.height)")
-            let rotatedResults = runVision(on: rotated, lang: lang)
-            dump(rotatedResults)
+            if let up = upscaled {
+                print("  -- upright 2× (\(up.width)×\(up.height))")
+                dump(runVision(on: up, configure: configure))
+            }
+            if let ru = rotatedUpscaled {
+                print("  -- rotated 2× (\(ru.width)×\(ru.height))")
+                dump(runVision(on: ru, configure: configure))
+            }
         }
+
+        // Contrast / binarisation pass. Manga bubbles are typically dark
+        // text on cream — the layout pass may be classifying it as
+        // illustration rather than text. Boosting contrast forces it
+        // closer to pure black-on-white, which Vision is trained on.
+        if let boosted = boostContrast(cgImage) {
+            saveCGImage(boosted, to: URL(fileURLWithPath: "/tmp/readpaw-ocr-boosted.png"))
+            print("\nSaved contrast-boosted copy to /tmp/readpaw-ocr-boosted.png")
+            print("\n========== contrast-boosted, zh-Hans ==========")
+            print("  -- upright (\(boosted.width)×\(boosted.height))")
+            dump(runVision(on: boosted, configure: { r in
+                r.recognitionLanguages = ["zh-Hans", "en-US"]
+                r.automaticallyDetectsLanguage = false
+            }))
+            if let rb = rotated90CCW(boosted) {
+                print("  -- rotated 90° CCW (\(rb.width)×\(rb.height))")
+                dump(runVision(on: rb, configure: { r in
+                    r.recognitionLanguages = ["zh-Hans", "en-US"]
+                    r.automaticallyDetectsLanguage = false
+                }))
+            }
+        }
+
+        // VisionKit's ImageAnalyzer is the Live Text engine. It usually
+        // outperforms VNRecognizeTextRequest on stylised real-world text
+        // (manga bubbles, signs, hand-written labels), at the cost of
+        // not giving us per-region bounding boxes — analysis.transcript
+        // is just one big string. If this returns the Chinese text, we
+        // know the device CAN OCR this page; we'd just need a more
+        // expensive scheme to recover per-bubble regions.
+        print("\n========== VisionKit ImageAnalyzer (Live Text) ==========")
+        // ImageAnalyzer is @MainActor, so we can't block the main thread
+        // with a semaphore (the analyze task would never get a chance to
+        // run on main). Spin the main run loop until the async task
+        // completes — that lets the @MainActor work make progress.
+        let done = DiagnosticFlag()
+        Task { @MainActor in
+            let nsImage = NSImage(cgImage: cgImage,
+                                   size: NSSize(width: cgImage.width, height: cgImage.height))
+            let analyzer = ImageAnalyzer()
+            let config = ImageAnalyzer.Configuration([.text])
+            do {
+                let analysis = try await analyzer.analyze(nsImage,
+                                                            orientation: .up,
+                                                            configuration: config)
+                let transcript = analysis.transcript
+                print("  transcript [\(transcript.count) chars]:")
+                let lines = transcript.split(separator: "\n", omittingEmptySubsequences: true)
+                for line in lines.prefix(40) {
+                    print("    \(line)")
+                }
+                if lines.count > 40 { print("    …(\(lines.count - 40) more lines)") }
+            } catch {
+                print("  ImageAnalyzer failed: \(error.localizedDescription)")
+            }
+            done.value = true
+        }
+        let deadline = Date().addingTimeInterval(120)
+        while !done.value, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        if !done.value { print("  (timed out after 120 s)") }
+    }
+
+    /// Cheap boxed-flag so the run-loop spin can poll a mutable bool
+    /// that the async task can also write. A plain `var` capture would
+    /// be a Sendable warning; a class reference passes by identity.
+    private final class DiagnosticFlag {
+        var value: Bool = false
+    }
+
+    /// Apply contrast + lightness boost via Core Image so the cream-on-
+    /// gray manga text becomes closer to black-on-white. Returns nil if
+    /// CI fails to render the result.
+    private static func boostContrast(_ cgImage: CGImage) -> CGImage? {
+        let ci = CIImage(cgImage: cgImage)
+        let filter = CIFilter.colorControls()
+        filter.inputImage = ci
+        filter.saturation = 0     // strip colour
+        filter.brightness = 0.0
+        filter.contrast = 2.4     // crank contrast
+        guard let out = filter.outputImage else { return nil }
+        return CIContext().createCGImage(out, from: ci.extent)
+    }
+
+    private static func upscale2x(_ cgImage: CGImage) -> CGImage? {
+        let w = cgImage.width * 2
+        let h = cgImage.height * 2
+        guard let ctx = CGContext(data: nil,
+                                   width: w, height: h,
+                                   bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        ctx.interpolationQuality = .high
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
+    private static func saveCGImage(_ image: CGImage, to url: URL) {
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        try? data.write(to: url)
     }
 
     private static func dump(_ boxes: [(text: String, rect: CGRect, confidence: Float)]) {
@@ -54,21 +212,16 @@ enum OCRDiagnostic {
     }
 
     private static func runVision(on cgImage: CGImage,
-                                   lang: String?) -> [(text: String, rect: CGRect, confidence: Float)] {
+                                   configure: (VNRecognizeTextRequest) -> Void)
+        -> [(text: String, rect: CGRect, confidence: Float)] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.revision = VNRecognizeTextRequest.currentRevision
-        if let lang {
-            request.recognitionLanguages = [lang, "en-US"]
-            request.automaticallyDetectsLanguage = false
-        } else {
-            request.recognitionLanguages = ["ja-JP", "zh-Hans", "zh-Hant", "ko-KR", "en-US"]
-            request.automaticallyDetectsLanguage = false
-        }
+        configure(request)
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         do { try handler.perform([request]) } catch {
-            print("  perform failed: \(error)")
+            print("    perform failed: \(error)")
             return []
         }
         guard let observations = request.results else { return [] }
