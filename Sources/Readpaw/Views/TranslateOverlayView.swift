@@ -31,12 +31,6 @@ struct TranslateOverlayView: View {
     /// position can't auto-show a tooltip the user didn't ask for.
     @State private var hoverActive: Bool = false
 
-    enum TranslationState: Equatable {
-        case loading
-        case loaded(String)
-        case failed(String)
-    }
-
     var body: some View {
         ZStack(alignment: .topLeading) {
             if let img = image {
@@ -225,6 +219,27 @@ struct TranslateOverlayView: View {
             }
         }
 
+        // Live Text fallback. Vision's recogniser returns zero observations
+        // on stylised manga fonts in both Japanese and Chinese. When that
+        // happens we ask VisionKit's `ImageAnalyzer` for the whole page's
+        // transcript and surface it in the side panel — the only translation
+        // path that actually works on those pages. Skipping the call when
+        // Vision already found a useful number of clusters keeps the cost
+        // off the happy path.
+        let needsLiveTextFallback = grouped.count < 2 && isCJKOrAuto(lang)
+        if needsLiveTextFallback {
+            let lines = await OCRService.shared.recognizeFullPageTranscript(in: img)
+            model.pageTranscriptLines = lines
+            if !lines.isEmpty {
+                model.translationPanelVisible = true
+            }
+        } else {
+            // Vision found bubbles → tooltips do the work; clear any stale
+            // panel content from the previous page so the panel header
+            // doesn't show last page's lines after navigation.
+            model.pageTranscriptLines = []
+        }
+
         // Brief beat after the boxes appear before we start honouring hover.
         // SwiftUI's .onHover fires hover=true on tracking-area install if the
         // cursor is already inside; after this wait, hoverActive flips true
@@ -234,6 +249,16 @@ struct TranslateOverlayView: View {
         if !Task.isCancelled {
             hoverActive = true
         }
+    }
+
+    /// Live Text fallback is gated to CJK languages because Vision's
+    /// blind spot is specifically on stylised CJK fonts (and pretty
+    /// reliably handles Latin manga lettering). For other source
+    /// languages a 0-cluster result is more likely "actually no text
+    /// on this page" than "engine failed".
+    private func isCJKOrAuto(_ language: String?) -> Bool {
+        guard let language = language?.lowercased() else { return true }
+        return language.hasPrefix("ja") || language.hasPrefix("zh") || language.hasPrefix("ko")
     }
 
     private func kickOff(cluster: OCRCluster) {

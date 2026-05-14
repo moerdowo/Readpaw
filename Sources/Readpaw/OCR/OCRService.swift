@@ -131,6 +131,39 @@ final class OCRService {
     /// user wants Vision to retry a page after switching language hints.
     func clearCache() {
         cache.removeAllObjects()
+        transcriptCache.removeAllObjects()
+    }
+
+    /// Cache for `recognizeFullPageTranscript`. Keyed by NSImage identity
+    /// alone since Live Text is language-agnostic.
+    private let transcriptCache = NSCache<NSObject, NSString>()
+
+    /// Full-page transcript via VisionKit's `ImageAnalyzer` (Live Text).
+    /// Reads stylised manga fonts that VNRecognizeTextRequest can't
+    /// handle. Returns the raw transcript split into non-empty lines,
+    /// preserving the order Live Text reports them in.
+    ///
+    /// Live Text doesn't expose per-line bounding boxes, so callers
+    /// can't use the result for on-image hover overlays — surface it in
+    /// a side panel instead. Cached per-NSImage so flipping translate
+    /// mode off/on doesn't re-run the model.
+    func recognizeFullPageTranscript(in image: NSImage) async -> [String] {
+        let key = image as NSObject
+        if let cached = transcriptCache.object(forKey: key) {
+            let lines = (cached as String)
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+            return lines
+        }
+        guard let cgImage = image.cgImage(forProposedRect: nil,
+                                           context: nil,
+                                           hints: nil) else { return [] }
+        guard let transcript = await LiveTextOCR.shared.recognize(in: cgImage) else { return [] }
+        transcriptCache.setObject(transcript as NSString, forKey: key)
+        return transcript
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 1 }
     }
 
     /// Two-pass OCR for CJK languages. Vision's current text-recognition

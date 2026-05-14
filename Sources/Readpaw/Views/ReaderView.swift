@@ -96,6 +96,20 @@ final class ReaderModel: ObservableObject {
     /// network.
     @Published var translateMode: Bool = false
 
+    /// Live Text fallback content. Vision's text recogniser fails outright
+    /// on stylised manga fonts (verified for Japanese and Chinese — zero
+    /// observations across every revision and language hint), so when
+    /// translate mode is on for a CJK source language we additionally run
+    /// VisionKit's `ImageAnalyzer` ("Live Text") which reads stylised
+    /// pages reliably. Live Text only gives a flat transcript with no
+    /// per-line bounding boxes, so we render the result in a side panel
+    /// instead of the on-image hover overlay.
+    @Published var pageTranscriptLines: [String] = []
+    /// True iff the side translation panel should be visible. The
+    /// translate toggle drives this, plus a toolbar sidebar button so the
+    /// user can hide it without leaving translate mode.
+    @Published var translationPanelVisible: Bool = false
+
     /// True while load() is restoring values from the saved item — used to
     /// suppress the didSet observers below so we don't trigger a save during
     /// startup that just re-writes the same values back.
@@ -333,6 +347,21 @@ struct ReaderView: View {
     }
 
     var body: some View {
+        readerBody
+            .inspector(isPresented: Binding(
+                get: { (model.value?.translationPanelVisible ?? false) && (model.value?.translateMode ?? false) },
+                set: { newValue in model.value?.translationPanelVisible = newValue }
+            )) {
+                if let m = model.value {
+                    TranslationPanelView(model: m,
+                                          settings: TranslationSettings.shared)
+                        .inspectorColumnWidth(min: 260, ideal: 300, max: 380)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var readerBody: some View {
         ZStack {
             backgroundColor
                 .ignoresSafeArea()
@@ -512,6 +541,19 @@ struct ReaderView: View {
         }
         .toggleStyle(.button)
         .help(m.translateMode ? "Turn off translation" : "Turn on translation")
+
+        if m.translateMode {
+            Toggle(isOn: Binding(
+                get: { m.translationPanelVisible },
+                set: { m.translationPanelVisible = $0 })
+            ) {
+                Image(systemName: "sidebar.right")
+            }
+            .toggleStyle(.button)
+            .help(m.translationPanelVisible
+                  ? "Hide translation panel"
+                  : "Show translation panel (Live Text)")
+        }
 
         Button {
             showingTranslateSettings.toggle()

@@ -187,7 +187,6 @@ enum OCRDiagnostic {
         // reasonable AND each region's transcript is correct, the
         // translate-mode overlay will show working per-bubble tooltips.
         print("\n========== BubbleDetector + LiveTextOCR (production pipeline) ==========")
-        BubbleDetector.isDebugBuildEnabled = true
         let regions = BubbleDetector.detect(in: cgImage)
         print("  detected \(regions.count) bubble candidates")
         // Render the regions onto a debug copy of the page so we can
