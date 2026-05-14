@@ -94,7 +94,35 @@ final class ReaderModel: ObservableObject {
     /// OCR'd speech bubbles with on-hover translations. Off by default
     /// because OCR has a one-shot cost per page and translation hits the
     /// network.
-    @Published var translateMode: Bool = false
+    @Published var translateMode: Bool = false {
+        didSet {
+            // Translate mode and two-page spread don't mix — the OCR
+            // overlay is laid out against a single page. Turning one on
+            // turns the other off.
+            if translateMode, twoPageSpread { twoPageSpread = false }
+        }
+    }
+
+    /// Two-page spread: render the current page and its neighbour as a
+    /// single composed image so the reader shows a book-like spread.
+    /// Image-based books only. Persisted per book.
+    @Published var twoPageSpread: Bool = false {
+        didSet {
+            guard twoPageSpread != oldValue else { return }
+            if twoPageSpread, translateMode { translateMode = false }
+            if twoPageSpread {
+                // Snap to an even index so spreads pair up consistently
+                // ([0,1], [2,3], …).
+                currentPage = currentPage - (currentPage % 2)
+            }
+            if !isRestoring { saveSubject.send(()) }
+        }
+    }
+
+    /// Page indices (0-based) the user has bookmarked in this book.
+    /// Mirrors `ComicItem.bookmarks`; kept as a Set here for cheap
+    /// membership tests and as `@Published` so the toolbar updates live.
+    @Published var bookmarkedPages: Set<Int> = []
 
     /// Live Text fallback content. Vision's text recogniser fails outright
     /// on stylised manga fonts (verified for Japanese and Chinese — zero
@@ -119,6 +147,10 @@ final class ReaderModel: ObservableObject {
     private var prefetchTasks: [Int: Task<NSImage?, Never>] = [:]
     private var pageCache = NSCache<NSNumber, NSImage>()
     private var contentCache: [Int: PageContent] = [:]
+    /// Low-resolution per-page thumbnails for the page-grid navigator.
+    /// Separate from `pageCache` (which holds full-res decodes, limit 6)
+    /// so scrolling the grid doesn't evict the pages being read.
+    private let pageThumbCache = NSCache<NSNumber, NSImage>()
     private var saveDebouncer: AnyCancellable?
     private let saveSubject = PassthroughSubject<Void, Never>()
 
@@ -126,6 +158,7 @@ final class ReaderModel: ObservableObject {
         self.itemID = itemID
         self.library = library
         pageCache.countLimit = 6
+        pageThumbCache.countLimit = 400
 
         saveDebouncer = saveSubject
             .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
@@ -145,6 +178,7 @@ final class ReaderModel: ObservableObject {
         // them back out as if the user had just changed them.
         isRestoring = true
         self.isTextBook = isText
+        self.bookmarkedPages = Set(item.bookmarks ?? [])
         if isText {
             self.direction = item.lastDirection ?? .vertical
             self.zoomMode  = item.lastZoomMode  ?? .fitWidth
@@ -163,6 +197,7 @@ final class ReaderModel: ObservableObject {
             // do and avoids accidentally landing on a 300%-pinched view
             // a week later with no memory of why.
             self.zoomMode = .fitPage
+            self.twoPageSpread = item.lastTwoPage ?? false
         }
         isRestoring = false
 
@@ -176,7 +211,12 @@ final class ReaderModel: ObservableObject {
                 let r = try ArchiveFactory.makeReader(for: item)
                 let count = try r.pageCount()
                 let last = item.lastReadPage
-                let initialPage = max(0, min(last, max(0, count - 1)))
+                var initialPage = max(0, min(last, max(0, count - 1)))
+                // Spread mode pairs pages from even indices — snap the
+                // restored page so the saved spread re-opens aligned.
+                if (item.lastTwoPage ?? false), !format.isEbook {
+                    initialPage -= initialPage % 2
+                }
 
                 await MainActor.run {
                     self.loadingStatus = "Decoding page \(initialPage + 1)…"
@@ -284,8 +324,96 @@ final class ReaderModel: ObservableObject {
         }
     }
 
-    func goNext() { setPage(currentPage + 1) }
-    func goPrev() { setPage(currentPage - 1) }
+    /// How many pages a single next/prev step covers. Two in spread
+    /// mode for image books, one otherwise.
+    var pageStride: Int { (twoPageSpread && !isTextBook) ? 2 : 1 }
+
+    func goNext() { setPage(currentPage + pageStride) }
+    func goPrev() { setPage(currentPage - pageStride) }
+
+    // MARK: - Bookmarks
+
+    func isBookmarked(_ page: Int) -> Bool { bookmarkedPages.contains(page) }
+
+    var isCurrentPageBookmarked: Bool { bookmarkedPages.contains(currentPage) }
+
+    /// Toggle the bookmark for a page; persists to the library item.
+    func toggleBookmark(at page: Int) {
+        let nowOn = library.toggleBookmark(itemID: itemID, page: page)
+        if nowOn { bookmarkedPages.insert(page) } else { bookmarkedPages.remove(page) }
+    }
+
+    func toggleBookmarkCurrentPage() { toggleBookmark(at: currentPage) }
+
+    // MARK: - Spread / display image
+
+    /// The image to render for `index` — a composed two-page spread when
+    /// spread mode is on, otherwise the single decoded page. Both the
+    /// paged reader and (when applicable) the translate overlay go
+    /// through this so they always agree on what's on screen.
+    func displayImage(at index: Int) async -> NSImage? {
+        if twoPageSpread && !isTextBook {
+            return await spreadImage(leftIndex: index)
+        }
+        return await image(at: index)
+    }
+
+    /// Compose pages `leftIndex` and `leftIndex + 1` side-by-side into a
+    /// single image. In right-to-left mode the page order is mirrored so
+    /// the lower page number sits on the right. If there's no second
+    /// page (last page of an odd-length book) the single page is
+    /// returned unchanged.
+    func spreadImage(leftIndex: Int) async -> NSImage? {
+        guard let first = await image(at: leftIndex) else { return nil }
+        guard leftIndex + 1 < pageCount,
+              let second = await image(at: leftIndex + 1) else {
+            return first
+        }
+        // Reading order: in RTL the earlier page is on the right.
+        let pageA = direction == .rightToLeft ? second : first
+        let pageB = direction == .rightToLeft ? first : second
+        return ReaderModel.composeSpread(left: pageA, right: pageB)
+    }
+
+    /// Draw two page images into one canvas, side by side, vertically
+    /// centred against the taller of the two. Nonisolated so the
+    /// detached decode tasks can call it off the main actor.
+    nonisolated static func composeSpread(left: NSImage, right: NSImage) -> NSImage {
+        let lSize = left.size
+        let rSize = right.size
+        let height = max(lSize.height, rSize.height)
+        let width = lSize.width + rSize.width
+        guard width > 0, height > 0 else { return left }
+        let canvas = NSImage(size: NSSize(width: width, height: height))
+        canvas.lockFocus()
+        NSColor.clear.set()
+        NSBezierPath.fill(NSRect(x: 0, y: 0, width: width, height: height))
+        left.draw(in: NSRect(x: 0,
+                              y: (height - lSize.height) / 2,
+                              width: lSize.width,
+                              height: lSize.height))
+        right.draw(in: NSRect(x: lSize.width,
+                               y: (height - rSize.height) / 2,
+                               width: rSize.width,
+                               height: rSize.height))
+        canvas.unlockFocus()
+        return canvas
+    }
+
+    // MARK: - Page-grid thumbnails
+
+    /// A small thumbnail of a single page for the page-grid navigator.
+    /// Decoded from the full page on first request and cached in a
+    /// dedicated, generously-sized cache.
+    func pageThumbnail(at index: Int) async -> NSImage? {
+        if index < 0 || index >= pageCount { return nil }
+        let key = NSNumber(value: index)
+        if let cached = pageThumbCache.object(forKey: key) { return cached }
+        guard let full = await image(at: index) else { return nil }
+        let thumb = full.resized(maxDimension: 220)
+        pageThumbCache.setObject(thumb, forKey: key)
+        return thumb
+    }
 
     /// The cover thumbnail for the current book, used as a low-res placeholder
     /// while page 0 is being decoded so the reader never opens to a blank
@@ -296,7 +424,12 @@ final class ReaderModel: ObservableObject {
     }
 
     func setPage(_ index: Int) {
-        let clamped = max(0, min(pageCount - 1, index))
+        var clamped = max(0, min(pageCount - 1, index))
+        // Spread mode always lands on the even page of a pair so the
+        // composed image stays aligned with the [0,1],[2,3],… pairing.
+        if twoPageSpread, !isTextBook {
+            clamped -= clamped % 2
+        }
         currentPage = clamped
         Task { await prefetchAround(clamped) }
         saveSubject.send(())
@@ -313,7 +446,8 @@ final class ReaderModel: ObservableObject {
             pageCount: pageCount,
             direction: direction,
             zoomMode: zoomMode,
-            textZoom: Double(textZoom)
+            textZoom: Double(textZoom),
+            twoPage: twoPageSpread
         )
     }
 
@@ -335,6 +469,8 @@ struct ReaderView: View {
     @State private var jumpPageText: String = ""
     @State private var showJumpField: Bool = false
     @State private var showingTranslateSettings: Bool = false
+    @State private var showingPageGrid: Bool = false
+    @State private var showingBookmarks: Bool = false
 
     private var backgroundColor: Color {
         guard let m = model.value else { return Color(red: 0.02, green: 0.04, blue: 0.10) }
@@ -406,9 +542,10 @@ struct ReaderView: View {
                 bottomBar(model: m)
             }
         }
-        .background(KeyEventHandlingView { event in
-            handleKey(event: event)
-        })
+        .background(KeyEventHandlingView(
+            onKeyDown: { handleKey(event: $0) },
+            onSwipe: { handleSwipe(deltaX: $0) }
+        ))
         .onAppear {
             if model.value == nil {
                 let m = ReaderModel(itemID: itemID, library: library)
@@ -445,9 +582,7 @@ struct ReaderView: View {
                     showJumpField.toggle()
                     jumpPageText = "\(m.currentPage + 1)"
                 } label: {
-                    Text(m.isTextBook
-                         ? "Chapter \(m.currentPage + 1) / \(m.pageCount)"
-                         : "Page \(m.currentPage + 1) / \(m.pageCount)")
+                    Text(pageCounterLabel(model: m))
                         .font(.callout.monospacedDigit())
                 }
                 .buttonStyle(.borderless)
@@ -469,6 +604,53 @@ struct ReaderView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             if let m = model.value {
                 if !m.isTextBook {
+                    Button {
+                        showingPageGrid.toggle()
+                    } label: {
+                        Image(systemName: "square.grid.2x2")
+                    }
+                    .help("Page grid")
+                    .popover(isPresented: $showingPageGrid) {
+                        PageGridView(model: m) { page in
+                            m.setPage(page)
+                            showingPageGrid = false
+                        }
+                    }
+                }
+
+                Button {
+                    m.toggleBookmarkCurrentPage()
+                } label: {
+                    Image(systemName: m.isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
+                }
+                .help(m.isCurrentPageBookmarked ? "Remove bookmark" : "Bookmark this page")
+                .keyboardShortcut("d", modifiers: [.command])
+
+                Button {
+                    showingBookmarks.toggle()
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .help("Bookmarks")
+                .popover(isPresented: $showingBookmarks) {
+                    BookmarksListView(model: m) { page in
+                        m.setPage(page)
+                        showingBookmarks = false
+                    }
+                }
+
+                if !m.isTextBook {
+                    Toggle(isOn: Binding(
+                        get: { m.twoPageSpread },
+                        set: { m.twoPageSpread = $0 })
+                    ) {
+                        Image(systemName: m.twoPageSpread
+                              ? "book.pages.fill" : "book.pages")
+                    }
+                    .toggleStyle(.button)
+                    .help(m.twoPageSpread
+                          ? "Single page" : "Two-page spread")
+
                     Picker("Direction", selection: Binding(
                         get: { m.direction },
                         set: { m.direction = $0 })
@@ -526,6 +708,18 @@ struct ReaderView: View {
                 }
             }
         }
+    }
+
+    /// The page-counter label. Two-page spread shows the page range
+    /// ("Pages 3–4 / 120"); everything else shows a single index.
+    private func pageCounterLabel(model m: ReaderModel) -> String {
+        if m.isTextBook {
+            return "Chapter \(m.currentPage + 1) / \(m.pageCount)"
+        }
+        if m.twoPageSpread, m.currentPage + 1 < m.pageCount {
+            return "Pages \(m.currentPage + 1)–\(m.currentPage + 2) / \(m.pageCount)"
+        }
+        return "Page \(m.currentPage + 1) / \(m.pageCount)"
     }
 
     /// Translate-mode toggle + settings popover. Only shown for image-based
@@ -601,6 +795,19 @@ struct ReaderView: View {
             .padding(.vertical, 8)
         }
         .background(.black.opacity(0.55))
+    }
+
+    /// Trackpad swipe-between-pages. `deltaX > 0` is a swipe toward the
+    /// left — page-forward in left-to-right reading, page-back in RTL
+    /// manga — mirroring the arrow-key mapping in `handleKey`.
+    private func handleSwipe(deltaX: CGFloat) {
+        guard let m = model.value else { return }
+        let isRTL = !m.isTextBook && m.direction == .rightToLeft
+        if deltaX > 0 {
+            isRTL ? m.goPrev() : m.goNext()
+        } else if deltaX < 0 {
+            isRTL ? m.goNext() : m.goPrev()
+        }
     }
 
     private func handleKey(event: NSEvent) -> Bool {

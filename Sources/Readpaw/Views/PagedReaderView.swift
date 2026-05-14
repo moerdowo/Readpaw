@@ -89,9 +89,21 @@ struct ZoomablePageView: View {
         }
         .frame(width: displaySize.width, height: displaySize.height)
         .clipped()
-        .task(id: pageIndex) {
+        // Re-decode when the page changes OR when spread mode / reading
+        // direction changes — both alter what the composed image is.
+        .task(id: PageRenderKey(page: pageIndex,
+                                 spread: model.twoPageSpread,
+                                 direction: model.direction)) {
             await loadCurrent()
         }
+    }
+
+    /// Identity for `.task(id:)` so the decode re-runs on the inputs
+    /// that change the displayed image.
+    private struct PageRenderKey: Equatable {
+        let page: Int
+        let spread: Bool
+        let direction: ReadingDirection
     }
 
     @MainActor
@@ -106,7 +118,7 @@ struct ZoomablePageView: View {
             placeholder = (pageIndex == 0) ? model.coverThumbnail() : nil
         }
         guard pageIndex >= 0, pageIndex < model.pageCount else { return }
-        let img = await model.image(at: pageIndex)
+        let img = await model.displayImage(at: pageIndex)
         if !Task.isCancelled, let img {
             image = img
             placeholder = nil

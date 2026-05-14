@@ -122,7 +122,8 @@ final class LibraryStore: ObservableObject {
                          pageCount: Int?,
                          direction: ReadingDirection? = nil,
                          zoomMode: ZoomMode? = nil,
-                         textZoom: Double? = nil) {
+                         textZoom: Double? = nil,
+                         twoPage: Bool? = nil) {
         guard let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
         items[idx].lastReadPage = page
         items[idx].lastOpened = Date()
@@ -130,6 +131,7 @@ final class LibraryStore: ObservableObject {
         if let direction { items[idx].lastDirection = direction }
         if let zoomMode { items[idx].lastZoomMode = zoomMode }
         if let textZoom { items[idx].lastTextZoom = textZoom }
+        if let twoPage { items[idx].lastTwoPage = twoPage }
         saveLibrary()
     }
 

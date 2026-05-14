@@ -80,6 +80,8 @@ struct ComicItem: Identifiable, Codable, Hashable {
     var lastDirection: ReadingDirection?
     var lastZoomMode: ZoomMode?
     var lastTextZoom: Double?
+    /// Whether the book was last read in two-page spread mode.
+    var lastTwoPage: Bool?
 
     /// Pages the user explicitly bookmarked within this book (0-based
     /// page indices). Sorted ascending. Optional for backward-compatible
@@ -106,6 +108,7 @@ struct ComicItem: Identifiable, Codable, Hashable {
         self.lastDirection = nil
         self.lastZoomMode = nil
         self.lastTextZoom = nil
+        self.lastTwoPage = nil
         self.bookmarks = nil
         self.isExternal = nil
     }
