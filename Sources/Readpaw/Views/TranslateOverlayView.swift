@@ -99,11 +99,18 @@ struct TranslateOverlayView: View {
     @ViewBuilder
     private func tooltip(for cluster: OCRCluster, anchor: CGRect) -> some View {
         let state = translations[cluster.text] ?? .loading
+        // Fixed width so the position math knows the tooltip's actual footprint.
+        // Capped at ~45 % of the visible page so the translation has to wrap
+        // onto several lines instead of stretching across the whole screen as
+        // one long row.
+        let width = tooltipWidth
         VStack(alignment: .leading, spacing: 4) {
             Text(cluster.text)
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.55))
                 .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
             switch state {
             case .loading:
                 HStack(spacing: 6) {
@@ -114,17 +121,20 @@ struct TranslateOverlayView: View {
                 Text(translation)
                     .font(.callout)
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
             case .failed(let message):
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
-                    .lineLimit(3)
+                    .lineLimit(4)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: max(220, min(380, displaySize.width * 0.5)), alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(width: width, alignment: .leading)
         .background(.black.opacity(0.88))
         .cornerRadius(10)
         .overlay(
@@ -132,18 +142,37 @@ struct TranslateOverlayView: View {
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.55), radius: 14, y: 6)
-        .position(tooltipPosition(for: anchor))
+        .position(tooltipPosition(for: anchor, width: width))
         .allowsHitTesting(false)
         .transition(.opacity)
     }
 
-    private func tooltipPosition(for anchor: CGRect) -> CGPoint {
+    /// Fixed pixel width for the tooltip — wide enough to hold a typical
+    /// short sentence on one line, narrow enough to force a long sentence
+    /// to wrap onto 2-3 lines instead of becoming a giant single row.
+    /// Clamps to the page area so a small reader window still fits.
+    private var tooltipWidth: CGFloat {
+        max(200, min(320, displaySize.width * 0.45))
+    }
+
+    private func tooltipPosition(for anchor: CGRect, width: CGFloat) -> CGPoint {
+        // Keep the WHOLE tooltip rect inside the display area, not just its
+        // centre point — `.position(x:y:)` centres the view, so a tooltip of
+        // width W whose centre is W/2 from the edge will paint partly
+        // off-screen and get clipped. Clamping by halfWidth fixes the cropped
+        // first/last characters the user was seeing on edge-adjacent bubbles.
+        let edgePadding: CGFloat = 8
+        let halfWidth = width / 2
+        let minX = halfWidth + edgePadding
+        let maxX = max(minX, displaySize.width - halfWidth - edgePadding)
+        let x = min(max(anchor.midX, minX), maxX)
+
         let preferAbove = anchor.minY > 80
-        let approxHeight: CGFloat = 80
+        let approxHeight: CGFloat = 100
         let y = preferAbove
             ? max(approxHeight / 2, anchor.minY - approxHeight / 2 - 6)
-            : min(displaySize.height - approxHeight / 2, anchor.maxY + approxHeight / 2 + 6)
-        let x = min(max(anchor.midX, 130), displaySize.width - 130)
+            : min(displaySize.height - approxHeight / 2,
+                  anchor.maxY + approxHeight / 2 + 6)
         return CGPoint(x: x, y: y)
     }
 
