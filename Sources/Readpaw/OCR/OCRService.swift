@@ -75,11 +75,29 @@ final class OCRService {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
+        // Pin to Vision's newest text-recognition revision; only that
+        // revision ships the Japanese/Chinese models that can read
+        // vertical (top-to-bottom) text — older revisions return zero
+        // observations for tategaki manga.
+        request.revision = VNRecognizeTextRequest.currentRevision
         if let lang = recognitionLanguage {
-            request.recognitionLanguages = [lang]
+            // For a hint that already includes a CJK script, also list the
+            // sibling scripts so Vision picks the right vertical model
+            // even when, say, the user set "Chinese (Simplified)" but the
+            // page has a kanji loanword. English tags along as a fallback
+            // for embedded sound effects.
+            request.recognitionLanguages = expandCJKLanguageHint(lang)
             request.automaticallyDetectsLanguage = false
         } else {
-            request.automaticallyDetectsLanguage = true
+            // "Auto" mode: Vision's automaticallyDetectsLanguage doesn't
+            // turn on vertical-script support, it just guesses one
+            // language for the whole image. Explicitly enumerate the
+            // common comic/manga source scripts so vertical Japanese,
+            // Chinese (both scripts) and Korean all get a model.
+            request.recognitionLanguages = [
+                "ja-JP", "zh-Hans", "zh-Hant", "ko-KR", "en-US",
+            ]
+            request.automaticallyDetectsLanguage = false
         }
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
@@ -107,6 +125,28 @@ final class OCRService {
         }
         // Vision returns one observation per *line* by default. For dense
         // speech bubbles that's usually right — each bubble is its own bubble.
+    }
+
+    /// When the user picks a CJK source language, also enable the related
+    /// scripts so Vision still recognises stray kanji / hanzi / hangul that
+    /// the page mixes in. English tags along as a fallback for inline
+    /// sound effects rendered with the Latin alphabet.
+    nonisolated private static func expandCJKLanguageHint(_ lang: String) -> [String] {
+        let normalized = lang.lowercased()
+        if normalized.hasPrefix("ja") {
+            return ["ja-JP", "zh-Hans", "zh-Hant", "en-US"]
+        }
+        if normalized.hasPrefix("zh") {
+            // Keep the requested Chinese variant first so Vision prefers it,
+            // then include the other plus Japanese kanji + English.
+            let other = normalized.contains("hant") || normalized.contains("tw")
+                ? "zh-Hans" : "zh-Hant"
+            return [lang, other, "ja-JP", "en-US"]
+        }
+        if normalized.hasPrefix("ko") {
+            return ["ko-KR", "ja-JP", "zh-Hans", "en-US"]
+        }
+        return [lang]
     }
 }
 
@@ -238,7 +278,21 @@ extension OCRService {
 
         return groupedIndices.values.map { indices in
             let members = indices.map { boxes[$0] }
-            let sorted = sortInReadingOrder(members, avgHeight: avgHeight)
+            // A cluster is "vertical" when every observation is clearly
+            // taller than it is wide — that's how Vision returns tategaki
+            // manga / vertical Chinese, where each column becomes one
+            // observation. Sort those columns right-to-left (top-to-bottom
+            // within a column) instead of the default left-to-right
+            // horizontal reading order.
+            let isVertical = members.count > 1 && members.allSatisfy {
+                $0.rect.height > $0.rect.width * 1.2
+            }
+            let sorted: [OCRBox]
+            if isVertical {
+                sorted = sortVerticalReadingOrder(members)
+            } else {
+                sorted = sortInReadingOrder(members, avgHeight: avgHeight)
+            }
             let combinedText = sorted.map(\.text)
                 .joined(separator: " ")
                 .replacingOccurrences(of: "\u{00A0}", with: " ")
@@ -276,6 +330,24 @@ extension OCRService {
                 return a.rect.minX < b.rect.minX
             }
             return aMid < bMid
+        }
+    }
+
+    /// Sort vertical-script columns into reading order: right-to-left
+    /// between columns, top-to-bottom within a column. Vision already
+    /// returns each column's characters in the correct (top-to-bottom)
+    /// order inside its `string`, so we only need to order the columns
+    /// themselves. Two boxes count as the "same column" when their
+    /// midpoint X's are within half the narrower column's width.
+    nonisolated private static func sortVerticalReadingOrder(_ boxes: [OCRBox]) -> [OCRBox] {
+        boxes.sorted { a, b in
+            let columnTolerance = min(a.rect.width, b.rect.width) * 0.5
+            if abs(a.rect.midX - b.rect.midX) > columnTolerance {
+                // Different columns — right column reads first.
+                return a.rect.midX > b.rect.midX
+            }
+            // Same column — top reads first.
+            return a.rect.minY < b.rect.minY
         }
     }
 }
