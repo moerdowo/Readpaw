@@ -334,6 +334,88 @@ final class LibraryStore: ObservableObject {
         try? data.write(to: libraryFile, options: .atomic)
     }
 
+    // MARK: - Backup export / import
+
+    /// Encode the whole library — items, reading progress, bookmarks,
+    /// per-book preferences — into a JSON blob the user can stash in
+    /// iCloud Drive / Dropbox / a Time Machine folder themselves. This
+    /// is the feasible stand-in for built-in cloud sync: real iCloud
+    /// needs a container entitlement the ad-hoc-signed SwiftPM build
+    /// can't carry.
+    func exportBackupData() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? encoder.encode(Persisted(items: items))
+    }
+
+    /// Merge a previously-exported backup back into the current library.
+    ///
+    /// - Books already present (matched by file path) adopt the
+    ///   backup's reading progress + per-book prefs when the backup's
+    ///   `lastOpened` is newer; bookmarks are always unioned so neither
+    ///   side loses a mark.
+    /// - Books in the backup but not the library are added if their
+    ///   file still exists on this Mac. Ones outside the library root
+    ///   folder are flagged `isExternal` so a rescan doesn't drop them.
+    ///
+    /// Returns how many items were updated vs. newly added.
+    @discardableResult
+    func importBackup(data: Data) -> (updated: Int, added: Int) {
+        guard let decoded = try? JSONDecoder().decode(Persisted.self, from: data) else {
+            return (0, 0)
+        }
+        var updated = 0
+        var added = 0
+        var indexByPath: [String: Int] = [:]
+        for (i, item) in items.enumerated() { indexByPath[item.url.path] = i }
+        let fm = FileManager.default
+        let rootPath = rootFolder?.path
+
+        for imported in decoded.items {
+            if let idx = indexByPath[imported.url.path] {
+                // Merge into the existing item.
+                let union = Set(items[idx].bookmarks ?? [])
+                    .union(imported.bookmarks ?? [])
+                let mergedBookmarks = union.isEmpty ? nil : union.sorted()
+                let bookmarksChanged = mergedBookmarks != items[idx].bookmarks
+                items[idx].bookmarks = mergedBookmarks
+
+                let localOpened = items[idx].lastOpened ?? .distantPast
+                let importedOpened = imported.lastOpened ?? .distantPast
+                if importedOpened > localOpened {
+                    items[idx].lastReadPage = imported.lastReadPage
+                    items[idx].lastOpened = imported.lastOpened
+                    items[idx].lastDirection = imported.lastDirection ?? items[idx].lastDirection
+                    items[idx].lastZoomMode = imported.lastZoomMode ?? items[idx].lastZoomMode
+                    items[idx].lastTextZoom = imported.lastTextZoom ?? items[idx].lastTextZoom
+                    items[idx].lastTwoPage = imported.lastTwoPage ?? items[idx].lastTwoPage
+                    items[idx].lastTranslateSource = imported.lastTranslateSource ?? items[idx].lastTranslateSource
+                    items[idx].lastTranslateTarget = imported.lastTranslateTarget ?? items[idx].lastTranslateTarget
+                    updated += 1
+                } else if bookmarksChanged {
+                    updated += 1
+                }
+            } else if fm.fileExists(atPath: imported.url.path) {
+                var copy = imported
+                if let rootPath, !imported.url.path.hasPrefix(rootPath) {
+                    copy.isExternal = true
+                }
+                copy.thumbnailFileName = nil // regenerate locally
+                items.append(copy)
+                added += 1
+            }
+        }
+
+        if updated > 0 || added > 0 {
+            items.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            saveLibrary()
+            if added > 0 {
+                Task { await generateMissingThumbnails() }
+            }
+        }
+        return (updated, added)
+    }
+
     private func persistRootFolder() {
         guard let url = rootFolder else {
             UserDefaults.standard.removeObject(forKey: defaultsKey)

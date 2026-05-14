@@ -18,9 +18,49 @@ enum AppMain {
     }
 }
 
+/// AppKit delegate. Owns the two app-wide stores so that AppKit-level
+/// integration points — files opened from Finder / the Dock, and the
+/// Dock's right-click menu — can reach them without SwiftUI plumbing.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let library = LibraryStore()
+    let openBooks = OpenBooks()
+
+    /// Files opened from Finder (double-click, "Open With"), dropped on
+    /// the Dock icon, or passed on the command line. Each supported file
+    /// is registered as a library item and opened in a reader window.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where ComicFormat.from(url: url) != nil {
+            if let id = library.addExternalFile(url: url) {
+                openBooks.open(itemID: id, library: library)
+            }
+        }
+    }
+
+    /// Right-click Dock menu — a shortcut list of recently opened books.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let recents = Array(library.recentlyOpened.prefix(8))
+        guard !recents.isEmpty else { return nil }
+        let menu = NSMenu()
+        for item in recents {
+            let entry = NSMenuItem(title: item.title,
+                                    action: #selector(openRecentFromDock(_:)),
+                                    keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = item.id
+            menu.addItem(entry)
+        }
+        return menu
+    }
+
+    @objc private func openRecentFromDock(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? ComicItem.ID else { return }
+        openBooks.open(itemID: id, library: library)
+    }
+}
+
 struct ReadpawApp: App {
-    @StateObject private var library = LibraryStore()
-    @StateObject private var openBooks = OpenBooks()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
         // Only force `.regular` when launched as a plain executable (e.g.
@@ -38,8 +78,8 @@ struct ReadpawApp: App {
     var body: some Scene {
         WindowGroup("Readpaw") {
             RootView()
-                .environmentObject(library)
-                .environmentObject(openBooks)
+                .environmentObject(appDelegate.library)
+                .environmentObject(appDelegate.openBooks)
                 // Floor large enough that the onboarding's 480-pt 3D orb,
                 // tagline and pill CTA all fit at once without the user
                 // having to manually resize the window.
@@ -58,7 +98,7 @@ struct ReadpawApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Folder…") {
-                    library.promptForFolder()
+                    appDelegate.library.promptForFolder()
                 }
                 .keyboardShortcut("o", modifiers: [.command])
                 Button("Open File…") {
@@ -66,34 +106,49 @@ struct ReadpawApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Rescan Library") {
-                    library.rescan()
+                    appDelegate.library.rescan()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
                 Divider()
 
                 Menu("Open Recent") {
-                    let recents = library.recentlyOpened
+                    let recents = appDelegate.library.recentlyOpened
                     if recents.isEmpty {
                         Button("No Recent Books") {}.disabled(true)
                     } else {
                         ForEach(recents.prefix(12)) { item in
                             Button(item.title) {
-                                openBooks.open(itemID: item.id, library: library)
+                                appDelegate.openBooks.open(itemID: item.id,
+                                                            library: appDelegate.library)
                             }
                         }
                         Divider()
                         Button("Clear Menu") {
-                            library.clearRecentlyOpened()
+                            appDelegate.library.clearRecentlyOpened()
                         }
                     }
+                }
+
+                Divider()
+
+                // The feasible stand-in for cloud sync: an explicit
+                // backup file the user can drop into iCloud Drive /
+                // Dropbox themselves. Real iCloud sync needs an iCloud
+                // container entitlement, which the ad-hoc-signed
+                // SwiftPM build can't carry.
+                Button("Export Library Backup…") {
+                    exportLibraryBackup()
+                }
+                Button("Import Library Backup…") {
+                    importLibraryBackup()
                 }
             }
         }
 
         WindowGroup("Reader", for: ComicItem.ID.self) { $itemID in
             ReaderWindowHost(itemID: itemID)
-                .environmentObject(library)
+                .environmentObject(appDelegate.library)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
@@ -107,8 +162,8 @@ final class OpenBooks: ObservableObject {
 
     /// Open a book in its own reader window, or bring the existing
     /// window forward if it's already open. Single entry point shared
-    /// by the library grid, the drag-and-drop handler, and the
-    /// File ▸ Open Recent menu.
+    /// by the library grid, the drag-and-drop handler, the File ▸ Open
+    /// Recent menu, the Dock menu, and Finder file-opens.
     func open(itemID: ComicItem.ID, library: LibraryStore) {
         if openItemIDs.contains(itemID) {
             ReaderWindowController.shared.bringToFront(itemID: itemID)
@@ -122,6 +177,12 @@ final class OpenBooks: ObservableObject {
 }
 
 extension ReadpawApp {
+    private var supportedExtensions: [String] {
+        ["cbz", "cbr", "zip", "rar", "7z", "pdf",
+         "epub", "mobi", "prc", "azw", "azw3", "kf8",
+         "fb2", "txt", "html", "htm", "xhtml"]
+    }
+
     /// File ▸ Open File… — pick one or more supported files anywhere on
     /// disk, add them to the library as external items, and open them.
     func openFilePanel() {
@@ -130,17 +191,58 @@ extension ReadpawApp {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        let exts = ["cbz", "cbr", "zip", "rar", "7z", "pdf",
-                    "epub", "mobi", "prc", "azw", "azw3", "kf8",
-                    "fb2", "txt", "html", "htm", "xhtml"]
-        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
+        panel.allowedContentTypes = supportedExtensions.compactMap {
+            UTType(filenameExtension: $0)
+        }
         if panel.runModal() == .OK {
             for url in panel.urls {
-                if let id = library.addExternalFile(url: url) {
-                    openBooks.open(itemID: id, library: library)
+                if let id = appDelegate.library.addExternalFile(url: url) {
+                    appDelegate.openBooks.open(itemID: id, library: appDelegate.library)
                 }
             }
         }
+    }
+
+    /// File ▸ Export Library Backup… — write the whole library (items,
+    /// reading progress, bookmarks, per-book prefs) to a JSON file.
+    func exportLibraryBackup() {
+        guard let data = appDelegate.library.exportBackupData() else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Library Backup"
+        panel.allowedContentTypes = [.json]
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "Readpaw-Library-\(stamp.string(from: Date())).json"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// File ▸ Import Library Backup… — merge a previously-exported
+    /// backup file back into the current library.
+    func importLibraryBackup() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Library Backup"
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let data = try? Data(contentsOf: url) else { return }
+        let result = appDelegate.library.importBackup(data: data)
+        let alert = NSAlert()
+        if result.updated == 0 && result.added == 0 {
+            alert.messageText = "Nothing to Import"
+            alert.informativeText = "The backup didn't contain any books that matched files on this Mac."
+        } else {
+            alert.messageText = "Library Backup Imported"
+            alert.informativeText = """
+            Updated reading progress for \(result.updated) book\(result.updated == 1 ? "" : "s") \
+            and added \(result.added) new book\(result.added == 1 ? "" : "s").
+            """
+        }
+        alert.runModal()
     }
 }
 
