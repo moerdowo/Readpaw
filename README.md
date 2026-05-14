@@ -37,7 +37,6 @@ Every reader is implemented in pure Swift or shells out to tools that ship with 
 
 ## Features
 
-- **Welcome screen** with a small interactive USDZ 3D model — auto-rotates, drag to spin manually.
 - **Library** with cover thumbnails generated on first scan (first image for comics, embedded cover for EPUB/FB2, a stylized placeholder for text formats). Search, sort by title / date added / recently opened, resizable cards.
 - **Unreadable files are skipped during scan** — the canonical readability check is "can `ArchiveFactory.makeReader` open it?", so broken zips, password-protected PDFs, HUFF/CDIC MOBIs etc. never reach the library.
 - **Reader window** that opens at the page's aspect ratio on first open (no more letterboxing tall manga in a 4:3 window) and remembers any user resize via `setFrameAutosaveName` afterwards.
