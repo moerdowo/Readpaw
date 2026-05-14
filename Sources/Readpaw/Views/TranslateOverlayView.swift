@@ -26,6 +26,10 @@ struct TranslateOverlayView: View {
     @State private var translations: [String: TranslationState] = [:]
     @State private var hoveredClusterID: String?
     @State private var pinnedClusterID: String?
+    /// Hover events arriving while this is false are dropped. Flipped to
+    /// true a beat after each page's OCR finishes so the cursor's resting
+    /// position can't auto-show a tooltip the user didn't ask for.
+    @State private var hoverActive: Bool = false
 
     enum TranslationState: Equatable {
         case loading
@@ -79,6 +83,12 @@ struct TranslateOverlayView: View {
             .frame(width: frame.width, height: frame.height)
             .position(x: frame.midX, y: frame.midY)
             .onHover { hovering in
+                // Drop the initial-state hover SwiftUI fires when its
+                // tracking area is installed under an already-resting
+                // cursor. Once the user actually moves the mouse and
+                // re-enters a bubble, hoverActive is true and the tooltip
+                // shows normally.
+                guard hoverActive else { return }
                 if hovering {
                     hoveredClusterID = id
                     if translations[cluster.text] == nil {
@@ -186,6 +196,11 @@ struct TranslateOverlayView: View {
 
     private func loadAndScan() async {
         guard model.translateMode else { return }
+        // Suppress hover events until after the page is ready and the user
+        // has had a moment — otherwise the cursor's resting spot triggers
+        // an immediate auto-tooltip the moment translate mode flips on.
+        hoverActive = false
+        hoveredClusterID = nil
         translations = [:]
         clusters = []
         image = nil
@@ -208,6 +223,16 @@ struct TranslateOverlayView: View {
             for cluster in grouped where translations[cluster.text] == nil {
                 kickOff(cluster: cluster)
             }
+        }
+
+        // Brief beat after the boxes appear before we start honouring hover.
+        // SwiftUI's .onHover fires hover=true on tracking-area install if the
+        // cursor is already inside; after this wait, hoverActive flips true
+        // but no new tracking event fires, so the user has to actually move
+        // the cursor onto a bubble for the first tooltip to appear.
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        if !Task.isCancelled {
+            hoverActive = true
         }
     }
 
