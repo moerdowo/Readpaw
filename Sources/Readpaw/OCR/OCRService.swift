@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreImage
 import Vision
 
 /// One detected text region on the page. `rect` is in normalized image
@@ -184,14 +185,23 @@ final class OCRService {
     /// leftmost end of a row, which Vision handles reliably even when its
     /// vertical-text path fails. The caller transforms the returned boxes
     /// back into the original image's coordinate space.
+    ///
+    /// The destination context is hard-coded to device RGB + premultiplied
+    /// alpha. Inheriting the source CGImage's colorSpace (the obvious
+    /// thing to do) silently broke for monochrome manga: a grayscale
+    /// source + 4-channel `premultipliedLast` alpha is an unsupported
+    /// CGContext combination, so `CGContext.init` returns nil and the
+    /// rotated pass quietly degrades to no-op. Quartz handles
+    /// grayscale → RGB on draw automatically, so forcing RGB always works
+    /// regardless of the source pixel format.
     nonisolated private static func rotated90CCW(_ cgImage: CGImage) -> CGImage? {
         let w = cgImage.width
         let h = cgImage.height
         let newWidth = h
         let newHeight = w
-        let colorSpace = cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-        guard let ctx = CGContext(
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo: UInt32 = CGImageAlphaInfo.premultipliedLast.rawValue
+        if let ctx = CGContext(
             data: nil,
             width: newWidth,
             height: newHeight,
@@ -199,15 +209,26 @@ final class OCRService {
             bytesPerRow: 0,
             space: colorSpace,
             bitmapInfo: bitmapInfo
-        ) else { return nil }
-        // CG's coordinate origin is bottom-left. translate(h, 0) then
-        // rotate(+π/2) draws the source so its visual top edge lands on
-        // the rotated canvas's visual left edge — a 90° CCW rotation when
-        // the image is viewed top-left-origin.
-        ctx.translateBy(x: CGFloat(h), y: 0)
-        ctx.rotate(by: .pi / 2)
-        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return ctx.makeImage()
+        ) {
+            ctx.interpolationQuality = .high
+            // CG's coordinate origin is bottom-left. translate(h, 0) then
+            // rotate(+π/2) draws the source so its visual top edge lands on
+            // the rotated canvas's visual left edge — a 90° CCW rotation
+            // when the image is viewed top-left-origin.
+            ctx.translateBy(x: CGFloat(h), y: 0)
+            ctx.rotate(by: .pi / 2)
+            ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+            if let rotated = ctx.makeImage() { return rotated }
+        }
+        // Fallback: Core Image. Slower per-call but tolerates any source
+        // pixel format Quartz can't synthesise a context for.
+        let ci = CIImage(cgImage: cgImage)
+        let rotated = ci.transformed(by: CGAffineTransform(rotationAngle: .pi / 2))
+        let normalized = rotated.transformed(by: CGAffineTransform(
+            translationX: -rotated.extent.minX,
+            y: -rotated.extent.minY
+        ))
+        return CIContext().createCGImage(normalized, from: normalized.extent)
     }
 
     /// Merge the upright and rotated OCR passes, dropping any rotated

@@ -9,6 +9,10 @@ enum AppMain {
             SmokeTest.run(folder: args[idx + 1])
             exit(0)
         }
+        if let idx = args.firstIndex(of: "--ocr-test"), idx + 1 < args.count {
+            OCRDiagnostic.run(imagePath: args[idx + 1])
+            exit(0)
+        }
         ReadpawApp.main()
     }
 }
