@@ -139,16 +139,46 @@ struct LibraryView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 28) {
-                ForEach(filtered) { item in
-                    LibraryCard(item: item, width: cardSize)
-                        .onTapGesture(count: 2) { open(item) }
-                        .contextMenu { contextMenu(for: item) }
+            VStack(alignment: .leading, spacing: 28) {
+                if search.isEmpty, !library.inProgress.isEmpty {
+                    continueReadingShelf
+                }
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 28) {
+                    ForEach(filtered) { item in
+                        LibraryCard(item: item, width: cardSize)
+                            .onTapGesture(count: 2) { open(item) }
+                            .contextMenu { contextMenu(for: item) }
+                    }
                 }
             }
             .padding(24)
         }
         .background(ReadpawBackground())
+    }
+
+    /// Horizontal shelf of in-progress books, newest activity first.
+    /// Only shown when not searching — it's a "jump back in" affordance,
+    /// not a search result.
+    private var continueReadingShelf: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "bookmark.fill")
+                    .foregroundStyle(.tint)
+                Text("Continue Reading")
+                    .font(.title3.bold())
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 18) {
+                    ForEach(library.inProgress.prefix(15)) { item in
+                        LibraryCard(item: item, width: 132)
+                            .onTapGesture(count: 2) { open(item) }
+                            .contextMenu { contextMenu(for: item) }
+                    }
+                }
+                .padding(.bottom, 4)
+            }
+            Divider()
+        }
     }
 
     @ViewBuilder
@@ -164,15 +194,7 @@ struct LibraryView: View {
     }
 
     private func open(_ item: ComicItem) {
-        let id = item.id
-        if !openBooks.openItemIDs.contains(id) {
-            openBooks.openItemIDs.insert(id)
-            ReaderWindowController.shared.open(itemID: id, library: library) {
-                openBooks.openItemIDs.remove(id)
-            }
-        } else {
-            ReaderWindowController.shared.bringToFront(itemID: id)
-        }
+        openBooks.open(itemID: item.id, library: library)
     }
 }
 
@@ -201,11 +223,13 @@ struct LibraryCard: View {
                 }
                 .frame(width: width, height: width * 1.45)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(alignment: .bottom) { progressBar }
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(Color.black.opacity(0.12), lineWidth: 1)
                 )
                 .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                .overlay(alignment: .topLeading) { progressBadge }
 
                 Text(item.format.displayName)
                     .font(.caption2.bold())
@@ -247,6 +271,46 @@ struct LibraryCard: View {
         .contentShape(Rectangle())
         .onAppear(perform: loadThumbnail)
         .onChange(of: item.thumbnailFileName) { loadThumbnail() }
+    }
+
+    /// Corner badge: a green check once finished, otherwise a "% read"
+    /// pill for books in progress. Nothing for untouched books.
+    @ViewBuilder
+    private var progressBadge: some View {
+        if item.isFinished {
+            Image(systemName: "checkmark")
+                .font(.caption2.bold())
+                .foregroundStyle(.white)
+                .padding(5)
+                .background(Color.green, in: Circle())
+                .padding(6)
+        } else if let frac = item.progressFraction, item.lastReadPage > 0 {
+            Text("\(Int((frac * 100).rounded()))%")
+                .font(.caption2.bold().monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.tint, in: Capsule())
+                .foregroundStyle(.white)
+                .padding(6)
+        }
+    }
+
+    /// Thin progress fill along the bottom edge of the cover, mirroring
+    /// the percentage badge for an at-a-glance scan down the grid.
+    @ViewBuilder
+    private var progressBar: some View {
+        if let frac = item.progressFraction, item.lastReadPage > 0 {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(.black.opacity(0.35))
+                    Rectangle()
+                        .fill(item.isFinished ? Color.green : Color.accentColor)
+                        .frame(width: geo.size.width * CGFloat(frac))
+                }
+            }
+            .frame(height: 4)
+        }
     }
 
     private func loadThumbnail() {

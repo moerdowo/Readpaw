@@ -49,6 +49,74 @@ final class LibraryStore: ObservableObject {
         items.first(where: { $0.id == id })
     }
 
+    /// Books that have been opened at least once, most-recent first.
+    /// Drives the File ▸ Open Recent menu.
+    var recentlyOpened: [ComicItem] {
+        items
+            .filter { $0.lastOpened != nil }
+            .sorted { ($0.lastOpened ?? .distantPast) > ($1.lastOpened ?? .distantPast) }
+    }
+
+    /// Books opened and advanced past page 1 but not finished. Drives
+    /// the "Continue Reading" shelf at the top of the library.
+    var inProgress: [ComicItem] {
+        recentlyOpened.filter { $0.isInProgress }
+    }
+
+    /// Add a file the user dragged onto the window. If it's already in
+    /// the library (matched by path) the existing item's ID is returned
+    /// so the caller can just open it. Otherwise a new `isExternal`
+    /// item is created, persisted, and queued for thumbnail generation.
+    /// Returns nil if the file's extension isn't a supported format.
+    @discardableResult
+    func addExternalFile(url: URL) -> ComicItem.ID? {
+        if let existing = items.first(where: { $0.url.path == url.path }) {
+            return existing.id
+        }
+        guard let format = ComicFormat.from(url: url) else { return nil }
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        var item = ComicItem(url: url, format: format, fileSize: size)
+        item.isExternal = true
+        items.append(item)
+        items.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        saveLibrary()
+        // Generate the cover off the main actor; reuses the same
+        // readability-gated path the folder scan uses, so an unreadable
+        // drop gets dropped back out of the library cleanly.
+        Task { await generateMissingThumbnails() }
+        return item.id
+    }
+
+    /// Clear the File ▸ Open Recent menu by wiping `lastOpened` on every
+    /// item. Reading progress (`lastReadPage`) is intentionally left
+    /// untouched — this only forgets *when* books were opened.
+    func clearRecentlyOpened() {
+        for idx in items.indices {
+            items[idx].lastOpened = nil
+        }
+        saveLibrary()
+    }
+
+    /// Toggle a page index in a book's bookmark list. Returns the new
+    /// bookmarked state for that page (true = now bookmarked).
+    @discardableResult
+    func toggleBookmark(itemID: ComicItem.ID, page: Int) -> Bool {
+        guard let idx = items.firstIndex(where: { $0.id == itemID }) else { return false }
+        var marks = items[idx].bookmarks ?? []
+        if let at = marks.firstIndex(of: page) {
+            marks.remove(at: at)
+            items[idx].bookmarks = marks.isEmpty ? nil : marks
+            saveLibrary()
+            return false
+        } else {
+            marks.append(page)
+            marks.sort()
+            items[idx].bookmarks = marks
+            saveLibrary()
+            return true
+        }
+    }
+
     func updateProgress(itemID: ComicItem.ID,
                          page: Int,
                          pageCount: Int?,
@@ -110,6 +178,18 @@ final class LibraryStore: ObservableObject {
                 nextItems.append(new)
             }
         }
+
+        // Preserve drag-dropped external files — they live outside the
+        // root folder tree so the enumeration above never finds them.
+        // Keep them only while the underlying file still exists.
+        let fm = FileManager.default
+        for item in existingItems where item.isExternal == true {
+            let alreadyIncluded = nextItems.contains { $0.id == item.id }
+            if !alreadyIncluded, fm.fileExists(atPath: item.url.path) {
+                nextItems.append(item)
+            }
+        }
+
         nextItems.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
 
         await MainActor.run {

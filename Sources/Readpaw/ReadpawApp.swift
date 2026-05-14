@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 @main
 enum AppMain {
@@ -60,10 +61,33 @@ struct ReadpawApp: App {
                     library.promptForFolder()
                 }
                 .keyboardShortcut("o", modifiers: [.command])
+                Button("Open File…") {
+                    openFilePanel()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Rescan Library") {
                     library.rescan()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Divider()
+
+                Menu("Open Recent") {
+                    let recents = library.recentlyOpened
+                    if recents.isEmpty {
+                        Button("No Recent Books") {}.disabled(true)
+                    } else {
+                        ForEach(recents.prefix(12)) { item in
+                            Button(item.title) {
+                                openBooks.open(itemID: item.id, library: library)
+                            }
+                        }
+                        Divider()
+                        Button("Clear Menu") {
+                            library.clearRecentlyOpened()
+                        }
+                    }
+                }
             }
         }
 
@@ -77,12 +101,53 @@ struct ReadpawApp: App {
     }
 }
 
+@MainActor
 final class OpenBooks: ObservableObject {
     @Published var openItemIDs: Set<ComicItem.ID> = []
+
+    /// Open a book in its own reader window, or bring the existing
+    /// window forward if it's already open. Single entry point shared
+    /// by the library grid, the drag-and-drop handler, and the
+    /// File ▸ Open Recent menu.
+    func open(itemID: ComicItem.ID, library: LibraryStore) {
+        if openItemIDs.contains(itemID) {
+            ReaderWindowController.shared.bringToFront(itemID: itemID)
+            return
+        }
+        openItemIDs.insert(itemID)
+        ReaderWindowController.shared.open(itemID: itemID, library: library) { [weak self] in
+            self?.openItemIDs.remove(itemID)
+        }
+    }
+}
+
+extension ReadpawApp {
+    /// File ▸ Open File… — pick one or more supported files anywhere on
+    /// disk, add them to the library as external items, and open them.
+    func openFilePanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Open Book"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        let exts = ["cbz", "cbr", "zip", "rar", "7z", "pdf",
+                    "epub", "mobi", "prc", "azw", "azw3", "kf8",
+                    "fb2", "txt", "html", "htm", "xhtml"]
+        panel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                if let id = library.addExternalFile(url: url) {
+                    openBooks.open(itemID: id, library: library)
+                }
+            }
+        }
+    }
 }
 
 struct RootView: View {
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var openBooks: OpenBooks
+    @State private var dropTargeted: Bool = false
 
     var body: some View {
         Group {
@@ -92,5 +157,53 @@ struct RootView: View {
                 LibraryView()
             }
         }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10]))
+                    .background(Color.accentColor.opacity(0.08))
+                    .overlay {
+                        Label("Drop to open", systemImage: "arrow.down.doc")
+                            .font(.title2.bold())
+                            .foregroundStyle(.tint)
+                    }
+                    .padding(8)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: dropTargeted)
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            handleDrop(providers)
+        }
+    }
+
+    /// Accept files dropped anywhere on the main window. Each supported
+    /// file is registered as an external library item and opened; the
+    /// provider load is async so we hop back to the main actor to touch
+    /// the store and the window controller.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        for provider in providers {
+            guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
+            accepted = true
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let u = item as? URL {
+                    url = u
+                } else {
+                    url = nil
+                }
+                guard let url, ComicFormat.from(url: url) != nil else { return }
+                Task { @MainActor in
+                    if let id = library.addExternalFile(url: url) {
+                        openBooks.open(itemID: id, library: library)
+                    }
+                }
+            }
+        }
+        return accepted
     }
 }

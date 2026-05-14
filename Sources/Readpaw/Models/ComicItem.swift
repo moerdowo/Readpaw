@@ -81,6 +81,17 @@ struct ComicItem: Identifiable, Codable, Hashable {
     var lastZoomMode: ZoomMode?
     var lastTextZoom: Double?
 
+    /// Pages the user explicitly bookmarked within this book (0-based
+    /// page indices). Sorted ascending. Optional for backward-compatible
+    /// decoding of pre-bookmark library.json files.
+    var bookmarks: [Int]?
+
+    /// True for files dragged onto the window from outside the library
+    /// root folder. Library rescans rebuild the item list from the root
+    /// folder tree, which would otherwise drop these — the flag tells
+    /// the scanner to preserve them as long as the file still exists.
+    var isExternal: Bool?
+
     init(url: URL, format: ComicFormat, fileSize: Int64) {
         self.id = UUID()
         self.url = url
@@ -95,5 +106,29 @@ struct ComicItem: Identifiable, Codable, Hashable {
         self.lastDirection = nil
         self.lastZoomMode = nil
         self.lastTextZoom = nil
+        self.bookmarks = nil
+        self.isExternal = nil
+    }
+
+    // MARK: - Reading progress
+
+    /// Fraction of the book read (0…1), or nil if the page count isn't
+    /// known yet. Based on `lastReadPage + 1` so being on the last page
+    /// reads as 100 %.
+    var progressFraction: Double? {
+        guard let total = pageCount, total > 0 else { return nil }
+        return min(1.0, Double(lastReadPage + 1) / Double(total))
+    }
+
+    /// True once the reader has reached the final page.
+    var isFinished: Bool {
+        guard let total = pageCount, total > 0 else { return false }
+        return lastReadPage + 1 >= total
+    }
+
+    /// True when the book has been opened and advanced past the first
+    /// page but isn't finished — i.e. a candidate for "Continue Reading".
+    var isInProgress: Bool {
+        lastReadPage > 0 && !isFinished
     }
 }
