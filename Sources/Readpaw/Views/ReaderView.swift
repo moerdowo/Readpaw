@@ -766,7 +766,12 @@ struct ReaderView: View {
             .help("Next page")
         }
 
-        ToolbarItemGroup(placement: .principal) {
+        // Page / chapter counter — pulled to the right of the toolbar
+        // (not centred), with horizontal breathing room from the
+        // navigation buttons on its left and the action controls on its
+        // right. Declared before the main primaryAction group so it
+        // sits at the left edge of the right-hand cluster.
+        ToolbarItemGroup(placement: .primaryAction) {
             if let m = model.value {
                 Button {
                     showJumpField.toggle()
@@ -774,6 +779,7 @@ struct ReaderView: View {
                 } label: {
                     Text(pageCounterLabel(model: m))
                         .font(.callout.monospacedDigit())
+                        .padding(.horizontal, 10)
                 }
                 .buttonStyle(.borderless)
                 .help(m.isTextBook ? "Jump to chapter" : "Jump to page")
