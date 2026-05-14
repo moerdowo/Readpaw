@@ -90,6 +90,11 @@ final class ReaderModel: ObservableObject {
     @Published var textZoom: CGFloat = 1.0 {
         didSet { if textZoom != oldValue, !isRestoring { saveSubject.send(()) } }
     }
+    /// When on, image-based readers (Paged + future Vertical) overlay
+    /// OCR'd speech bubbles with on-hover translations. Off by default
+    /// because OCR has a one-shot cost per page and translation hits the
+    /// network.
+    @Published var translateMode: Bool = false
 
     /// True while load() is restoring values from the saved item — used to
     /// suppress the didSet observers below so we don't trigger a save during
@@ -310,6 +315,7 @@ struct ReaderView: View {
     @StateObject private var model: ReaderModelHolder = ReaderModelHolder()
     @State private var jumpPageText: String = ""
     @State private var showJumpField: Bool = false
+    @State private var showingTranslateSettings: Bool = false
 
     private var backgroundColor: Color {
         guard let m = model.value else { return Color(red: 0.02, green: 0.04, blue: 0.10) }
@@ -480,7 +486,36 @@ struct ReaderView: View {
                 }
                 .toggleStyle(.button)
                 .help("Toggle background")
+
+                if !m.isTextBook {
+                    translateControls(model: m)
+                }
             }
+        }
+    }
+
+    /// Translate-mode toggle + settings popover. Only shown for image-based
+    /// books — EPUB / MOBI text is already in the document, the user can
+    /// pick a system text translator instead.
+    @ViewBuilder
+    private func translateControls(model m: ReaderModel) -> some View {
+        Toggle(isOn: Binding(
+            get: { m.translateMode },
+            set: { m.translateMode = $0 })
+        ) {
+            Image(systemName: m.translateMode ? "character.bubble.fill" : "character.bubble")
+        }
+        .toggleStyle(.button)
+        .help(m.translateMode ? "Turn off translation" : "Turn on translation")
+
+        Button {
+            showingTranslateSettings.toggle()
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .help("Translate settings")
+        .popover(isPresented: $showingTranslateSettings) {
+            TranslateSettingsView(settings: TranslationSettings.shared)
         }
     }
 

@@ -6,14 +6,27 @@ struct PagedReaderView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ZoomablePageView(model: model,
-                             pageIndex: model.currentPage,
-                             displaySize: geo.size)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .onTapGesture { location in
-                    handleClick(at: location, container: geo.size)
+            ZStack(alignment: .topLeading) {
+                ZoomablePageView(model: model,
+                                 pageIndex: model.currentPage,
+                                 displaySize: geo.size)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { location in
+                        handleClick(at: location, container: geo.size)
+                    }
+
+                // Translate overlay sits on top of the page and renders OCR'd
+                // bubbles with hover tooltips. Hidden unless translate mode
+                // is on so it costs zero in the common case.
+                if model.translateMode {
+                    TranslateOverlayView(model: model,
+                                         settings: TranslationSettings.shared,
+                                         displaySize: geo.size)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(true)
                 }
+            }
         }
     }
 

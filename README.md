@@ -49,6 +49,7 @@ Every reader is implemented in pure Swift or shells out to tools that ship with 
 - **Keyboard navigation** — arrow keys, space, page up/down, home/end.
 - **Persistent per-book state** — last-read page, reading direction, zoom mode, ebook text size are all remembered across reopens.
 - **Multiple windows** — every book opens in its own resizable window.
+- **Translate mode** for comics & manga — toggle the speech-bubble icon in the reader toolbar and hover any bubble to see a translation. Apple's Vision framework OCRs the page on-device; translation runs through Google Translate (default, no setup), Bing, or OpenAI (bring your own API key — stored in your macOS Keychain). Source & target languages and the active engine live in the gear-style settings popover next to the toggle.
 
 ## Install (prebuilt DMG)
 
