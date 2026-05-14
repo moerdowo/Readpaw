@@ -155,6 +155,94 @@ enum OCRDiagnostic {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         if !done.value { print("  (timed out after 120 s)") }
+
+        // Try VNDetectTextRectanglesRequest — Vision's older "find places
+        // that look like text" detector. Doesn't run OCR, just layout.
+        // May find regions on this manga where VNRecognizeTextRequest's
+        // full pipeline rejects everything.
+        print("\n========== VNDetectTextRectanglesRequest ==========")
+        do {
+            let req = VNDetectTextRectanglesRequest()
+            req.reportCharacterBoxes = false
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            try handler.perform([req])
+            let observations = req.results ?? []
+            print("  \(observations.count) regions")
+            for obs in observations.prefix(40) {
+                let v = obs.boundingBox
+                let r = CGRect(x: v.origin.x,
+                                y: 1 - v.origin.y - v.height,
+                                width: v.width, height: v.height)
+                let coords = String(format: "[%.3f, %.3f  %.3fx%.3f]",
+                                    r.minX, r.minY, r.width, r.height)
+                print("  \(coords) conf=\(String(format: "%.2f", obs.confidence))")
+            }
+        } catch {
+            print("  detector failed: \(error)")
+        }
+
+        // End-to-end: bubble detector → Live Text per crop. This is the
+        // pipeline OCRService now falls back to when Vision returns < 2
+        // observations for a CJK source language. If the regions look
+        // reasonable AND each region's transcript is correct, the
+        // translate-mode overlay will show working per-bubble tooltips.
+        print("\n========== BubbleDetector + LiveTextOCR (production pipeline) ==========")
+        BubbleDetector.isDebugBuildEnabled = true
+        let regions = BubbleDetector.detect(in: cgImage)
+        print("  detected \(regions.count) bubble candidates")
+        // Render the regions onto a debug copy of the page so we can
+        // eyeball whether the detector found the speech bubbles.
+        if let debugImage = drawRegions(on: cgImage, regions: regions) {
+            saveCGImage(debugImage, to: URL(fileURLWithPath: "/tmp/readpaw-ocr-bubbles.png"))
+            print("  saved bubble-overlay debug PNG to /tmp/readpaw-ocr-bubbles.png")
+        }
+        let liveTextDone = DiagnosticFlag()
+        Task { @MainActor in
+            for (i, rect) in regions.enumerated() {
+                let coords = String(format: "[%.3f, %.3f  %.3fx%.3f]",
+                                    rect.minX, rect.minY, rect.width, rect.height)
+                if let text = await LiveTextOCR.shared.recognize(in: cgImage, rect: rect) {
+                    let oneLine = text.replacingOccurrences(of: "\n", with: " / ")
+                    print("  #\(i + 1) \(coords): \(oneLine)")
+                } else {
+                    print("  #\(i + 1) \(coords): (no text)")
+                }
+            }
+            liveTextDone.value = true
+        }
+        let deadline2 = Date().addingTimeInterval(180)
+        while !liveTextDone.value, Date() < deadline2 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        if !liveTextDone.value { print("  (live-text-per-region timed out)") }
+    }
+
+    /// Render a debug overlay showing each detected bubble region as a
+    /// yellow rectangle on a copy of the source image. Helps us see
+    /// whether the detector is finding the right blobs at a glance.
+    private static func drawRegions(on cgImage: CGImage, regions: [CGRect]) -> CGImage? {
+        let w = cgImage.width, h = cgImage.height
+        guard let ctx = CGContext(data: nil,
+                                   width: w, height: h,
+                                   bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.setStrokeColor(NSColor.systemYellow.cgColor)
+        ctx.setLineWidth(4)
+        for rect in regions {
+            // CG bottom-left origin: flip Y for drawing.
+            let drawRect = CGRect(
+                x: rect.minX * CGFloat(w),
+                y: CGFloat(h) - (rect.minY + rect.height) * CGFloat(h),
+                width: rect.width * CGFloat(w),
+                height: rect.height * CGFloat(h)
+            )
+            ctx.stroke(drawRect)
+        }
+        return ctx.makeImage()
     }
 
     /// Cheap boxed-flag so the run-loop spin can poll a mutable bool

@@ -56,13 +56,74 @@ final class OCRService {
             return cached
         }
 
-        let result = await Task.detached(priority: .userInitiated) {
+        // Phase 1: Vision's VNRecognizeTextRequest, with the 90°-CCW
+        // rotated pass for vertical CJK. Fast and gives precise per-line
+        // bounding boxes for any text Vision can actually read.
+        let visionResult = await Task.detached(priority: .userInitiated) {
             OCRService.recognizeAllOrientations(in: image,
                                                  recognitionLanguage: recognitionLanguage)
         }.value
 
-        cache.setObject(result as NSArray, forKey: key)
-        return result
+        if visionResult.count >= 2 || !OCRService.shouldRunLiveTextFallback(for: recognitionLanguage) {
+            cache.setObject(visionResult as NSArray, forKey: key)
+            return visionResult
+        }
+
+        // Phase 2: Vision found 0 or 1 observation despite the source
+        // language being CJK / Auto. That's almost always Apple's text
+        // recogniser bailing on a stylised manga font. Fall back to
+        // VisionKit's ImageAnalyzer (Live Text), which reads those
+        // fonts reliably. Live Text only exposes a flat transcript so
+        // we recover per-bubble regions by detecting bubble-shaped
+        // text-dense blobs up-front, then running Live Text on each
+        // crop individually.
+        let liveTextResult = await runLiveTextFallback(on: image)
+        // Prefer whichever pass returned more observations. Vision
+        // sometimes produces 1 high-confidence read (e.g. an English
+        // sound effect inside an otherwise Chinese page) that the
+        // Live Text fallback might miss.
+        let merged = liveTextResult.count >= visionResult.count
+            ? liveTextResult
+            : visionResult
+        cache.setObject(merged as NSArray, forKey: key)
+        return merged
+    }
+
+    /// Live Text is expensive (one ImageAnalyzer call per detected
+    /// bubble), so only run it for languages where Vision is known to
+    /// have a stylised-font blind spot. Latin scripts on regular comic
+    /// captions don't need it.
+    nonisolated private static func shouldRunLiveTextFallback(for language: String?) -> Bool {
+        guard let language = language?.lowercased() else { return true }
+        return language.hasPrefix("ja") || language.hasPrefix("zh") || language.hasPrefix("ko")
+    }
+
+    /// Detect candidate bubble rectangles and OCR each one with Live
+    /// Text. Returns one `OCRBox` per region that actually contained
+    /// readable text. The boxes use the detected bubble's normalised
+    /// bounding box; multi-line transcripts inside a bubble are joined
+    /// with a space so the existing cluster pipeline treats each bubble
+    /// as a single translation unit.
+    private func runLiveTextFallback(on image: NSImage) async -> [OCRBox] {
+        guard let cgImage = image.cgImage(forProposedRect: nil,
+                                           context: nil,
+                                           hints: nil) else { return [] }
+        let regions = BubbleDetector.detect(in: cgImage)
+        guard !regions.isEmpty else { return [] }
+
+        var results: [OCRBox] = []
+        results.reserveCapacity(regions.count)
+        let recogniser = LiveTextOCR.shared
+        for rect in regions {
+            guard let transcript = await recogniser.recognize(in: cgImage, rect: rect) else { continue }
+            let joined = transcript
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "  ", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard joined.count >= 2 else { continue }
+            results.append(OCRBox(text: joined, rect: rect, confidence: 1.0))
+        }
+        return results
     }
 
     /// Drop the cached OCR results. Bound to the Clear Cache button in
