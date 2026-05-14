@@ -25,7 +25,6 @@ struct TranslateOverlayView: View {
     @State private var clusters: [OCRCluster] = []
     @State private var translations: [String: TranslationState] = [:]
     @State private var hoveredClusterID: String?
-    @State private var pinnedClusterID: String?
 
     enum TranslationState: Equatable {
         case loading
@@ -64,7 +63,7 @@ struct TranslateOverlayView: View {
         }
     }
 
-    private var activeClusterID: String? { pinnedClusterID ?? hoveredClusterID }
+    private var activeClusterID: String? { hoveredClusterID }
 
     @ViewBuilder
     private func clusterHitArea(cluster: OCRCluster, frame: CGRect) -> some View {
@@ -78,6 +77,9 @@ struct TranslateOverlayView: View {
             )
             .frame(width: frame.width, height: frame.height)
             .position(x: frame.midX, y: frame.midY)
+            // Hover-only — no tap gesture so a click on a bubble falls
+            // through to the underlying PagedReaderView and still flips
+            // the page when the user clicks the edge thirds.
             .onHover { hovering in
                 if hovering {
                     hoveredClusterID = id
@@ -89,10 +91,6 @@ struct TranslateOverlayView: View {
                 } else if hoveredClusterID == id {
                     hoveredClusterID = nil
                 }
-            }
-            .onTapGesture {
-                pinnedClusterID = (pinnedClusterID == id) ? nil : id
-                if translations[cluster.text] == nil { kickOff(cluster: cluster) }
             }
     }
 
