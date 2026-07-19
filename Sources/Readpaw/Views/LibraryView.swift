@@ -14,6 +14,8 @@ struct LibraryView: View {
     @State private var search: String = ""
     @State private var sort: LibrarySort = .title
     @State private var cardSize: CGFloat = 180
+    @State private var serverURL: String? = nil
+    @State private var showingServerInfo: Bool = false
 
     var filtered: [ComicItem] {
         let base = library.items.filter { item in
@@ -90,6 +92,19 @@ struct LibraryView: View {
             Slider(value: $cardSize, in: 120...280)
                 .frame(width: 120)
                 .help("Cover size")
+
+            Button {
+                toggleServer()
+            } label: {
+                Image(systemName: serverURL == nil ? "wifi" : "wifi.circle.fill")
+                    .foregroundStyle(serverURL == nil ? Color.primary : Color.accentColor)
+            }
+            .help(serverURL == nil
+                  ? "Share library on this network"
+                  : "Sharing on \(serverURL!) — click to stop")
+            .popover(isPresented: $showingServerInfo) {
+                serverInfoPopover
+            }
 
             Button {
                 library.rescan()
@@ -195,6 +210,61 @@ struct LibraryView: View {
 
     private func open(_ item: ComicItem) {
         openBooks.open(itemID: item.id, library: library)
+    }
+
+    // MARK: - Server toggle
+
+    private func toggleServer() {
+        if serverURL != nil {
+            BrowseServer.stop()
+            serverURL = nil
+            showingServerInfo = false
+            return
+        }
+        do {
+            let server = try BrowseServer.start(library: library)
+            Task { @MainActor in
+                try? await server.waitUntilReady()
+                self.serverURL = server.displayURL
+            }
+            serverURL = server.displayURL
+            showingServerInfo = true
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't start server"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    @ViewBuilder
+    private var serverInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.circle.fill").foregroundStyle(.tint)
+                Text("Sharing on LAN").font(.headline)
+            }
+            if let url = serverURL {
+                Text("Open this URL in any browser on your Wi-Fi:")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Text(url).font(.title3.monospaced())
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                    } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.borderless)
+                    .help("Copy")
+                }
+            }
+            Text("Only image books (comics / manga / PDF) are served. Ebooks stay in-app. No password — anyone on this network can read.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Stop Sharing") { toggleServer() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(16)
+        .frame(width: 320)
     }
 }
 

@@ -30,6 +30,17 @@ cp "${EXE_PATH}" "${BUNDLE_DIR}/Contents/MacOS/${EXE_NAME}"
 chmod +x "${BUNDLE_DIR}/Contents/MacOS/${EXE_NAME}"
 cp "${INFO_PLIST}" "${BUNDLE_DIR}/Contents/Info.plist"
 
+# Sparkle — SPM links against @rpath/Sparkle.framework. Embed the actual
+# framework so the .app is self-contained, then add @executable_path/../
+# Frameworks to the binary's rpath.
+SPARKLE_FRAMEWORK="${BIN_PATH}/Sparkle.framework"
+if [[ -d "${SPARKLE_FRAMEWORK}" ]]; then
+  mkdir -p "${BUNDLE_DIR}/Contents/Frameworks"
+  cp -R "${SPARKLE_FRAMEWORK}" "${BUNDLE_DIR}/Contents/Frameworks/"
+  install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "${BUNDLE_DIR}/Contents/MacOS/${EXE_NAME}" 2>/dev/null || true
+fi
+
 # App icon. CFBundleIconFile in Info.plist references "AppIcon", which the
 # macOS Dock / Finder look up as AppIcon.icns in the bundle's Resources.
 if [[ -f "Resources/AppIcon.icns" ]]; then

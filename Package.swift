@@ -7,9 +7,18 @@ let package = Package(
     products: [
         .executable(name: "Readpaw", targets: ["Readpaw"])
     ],
+    dependencies: [
+        // Only third-party dep. Ships as a binary XCFramework via SPM;
+        // required for auto-update because the ad-hoc-signed .app can't
+        // ride Apple's Developer ID / MAS update path.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.4")
+    ],
     targets: [
         .executableTarget(
             name: "Readpaw",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/Readpaw",
             resources: [
                 .copy("Resources/Color_orb.usdz")

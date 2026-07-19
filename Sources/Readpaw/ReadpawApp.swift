@@ -14,7 +14,39 @@ enum AppMain {
             OCRDiagnostic.run(imagePath: args[idx + 1])
             exit(0)
         }
+        if args.contains("--serve-test") {
+            serveTestAndExit()
+        }
         ReadpawApp.main()
+    }
+
+    /// Smoke-test the BrowseServer HTTP parser without a UI: bind on a
+    /// random port, curl the root and a 404 path, print statuses, exit.
+    /// Run with `swift run Readpaw --serve-test`.
+    private static func serveTestAndExit() -> Never {
+        Task { @MainActor in
+            do {
+                let library = LibraryStore()
+                let server = try BrowseServer.start(library: library, port: 0)
+                try await server.waitUntilReady()
+                let base = "http://127.0.0.1:\(server.port)"
+                async let root = URLSession.shared.data(from: URL(string: base + "/")!)
+                async let miss = URLSession.shared.data(from: URL(string: base + "/nope")!)
+                let (_, r1) = try await root
+                let (_, r2) = try await miss
+                let s1 = (r1 as? HTTPURLResponse)?.statusCode ?? -1
+                let s2 = (r2 as? HTTPURLResponse)?.statusCode ?? -1
+                print("[serve-test] port=\(server.port) root=\(s1) miss=\(s2)")
+                assert(s1 == 200 && s2 == 404, "unexpected statuses")
+                BrowseServer.stop()
+                exit(s1 == 200 && s2 == 404 ? 0 : 1)
+            } catch {
+                print("[serve-test] failed: \(error)")
+                exit(1)
+            }
+        }
+        RunLoop.main.run()
+        exit(2)
     }
 }
 
@@ -143,6 +175,15 @@ struct ReadpawApp: App {
                 Button("Import Library Backup…") {
                     importLibraryBackup()
                 }
+            }
+
+            // Sparkle auto-update. Sits under the app menu (Readpaw ▸)
+            // like every other Mac app that ships Sparkle.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    Updater.shared.checkForUpdates()
+                }
+                .disabled(!Updater.shared.canCheck)
             }
         }
 
